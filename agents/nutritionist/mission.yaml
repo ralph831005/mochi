@@ -1,0 +1,36 @@
+name: nutritionist
+display_name: "Nutritionist"
+description: "Manages daily diet tracking, macro estimation, and dietary suggestions."
+routing_keys:
+  - nutrition
+  - diet
+  - food
+  - meal
+  - calories
+  - macros
+  - breakfast
+  - lunch
+  - dinner
+  - snack
+  - eat
+  - ate
+  - protein
+  - carbs
+  - fat
+  - vitamin
+  - water
+  - drink
+tools_module: mochi_agents.agents.nutritionist.tools
+model_config:
+  provider: google
+  model: gemini-2.0-flash
+  temperature: 0.3
+  max_tokens: 2048
+capabilities:
+  - text_prompt
+  - voice_transcript
+schedules:
+  - name: daily_summary
+    cron: "0 21 * * *"
+    action: daily_diet_summary
+    target_user_ids: all

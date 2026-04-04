@@ -1,0 +1,11 @@
+name: manager
+display_name: "Manager"
+description: "Routes ambiguous tasks to the appropriate specialist agent."
+routing_keys: []
+model_config:
+  provider: google
+  model: gemini-2.0-flash
+  temperature: 0.2
+  max_tokens: 1024
+capabilities:
+  - text_prompt

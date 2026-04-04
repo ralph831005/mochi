@@ -1,0 +1,12 @@
+# Mochi — Non-secret configuration (committed to git)
+
+# Which CommunicationClient implementation to use
+active_client: telegram
+
+# Telegram user IDs allowed to interact with the bot
+allowed_user_ids: []
+
+# File paths (relative to project root)
+data_dir: ./data
+agents_dir: ./agents
+system_dir: ./system

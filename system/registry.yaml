@@ -1,0 +1,32 @@
+# Mochi — Agent Registry
+
+agents:
+  - name: manager
+    display_name: "Manager"
+    description: "Routes ambiguous tasks to the appropriate specialist agent."
+    routing_keys: []
+    status: active
+
+  - name: nutritionist
+    display_name: "Nutritionist"
+    description: "Manages daily diet tracking, macro estimation, and dietary suggestions."
+    routing_keys:
+      - nutrition
+      - diet
+      - food
+      - meal
+      - calories
+      - macros
+      - breakfast
+      - lunch
+      - dinner
+      - snack
+      - eat
+      - ate
+      - protein
+      - carbs
+      - fat
+      - vitamin
+      - water
+      - drink
+    status: active
