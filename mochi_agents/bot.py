@@ -38,9 +38,10 @@ class MochiBot:
             registry=self.registry,
             runtime=self.runtime,
             tool_runner=self.tool_runner,
+            on_reload=self._sync_commands,
         )
         self.scheduler = Scheduler(runtime=self.runtime, client=self.client)
-        self._shutdown_event = asyncio.Event()
+        self._tasks: list[asyncio.Task] = []
 
     async def start(self) -> None:
         """Initialize all components and run the main loops."""
@@ -50,6 +51,10 @@ class MochiBot:
         # Load registry
         registry_path = self.settings.resolve_path(self.settings.system_dir) / "registry.yaml"
         self.registry.load(registry_path)
+
+        # Load aliases from mission files
+        agents_dir = self.settings.resolve_path(self.settings.agents_dir)
+        self.registry.load_aliases_from_missions(agents_dir)
 
         # Initialize databases for all registered agents
         data_dir = self.settings.resolve_path(self.settings.data_dir)
@@ -62,6 +67,9 @@ class MochiBot:
         # Load cron jobs
         self.scheduler.load_cron_jobs()
 
+        # Register slash commands with Telegram
+        await self._sync_commands()
+
         # Log startup summary
         agents = self.registry.list_agents()
         agent_names = ", ".join(f"{a.display_name}" for a in agents)
@@ -69,24 +77,43 @@ class MochiBot:
         print(f"🍡 Mochi started — {len(agents)} agents: {agent_names}")
 
         # Run both loops in parallel
+        poll_task = asyncio.create_task(self._poll_loop())
+        scheduler_task = asyncio.create_task(self.scheduler.run())
+        self._tasks = [poll_task, scheduler_task]
+
         try:
-            await asyncio.gather(
-                self._poll_loop(),
-                self.scheduler.run(),
-            )
+            await asyncio.gather(*self._tasks)
         except asyncio.CancelledError:
-            logger.info("Mochi shutting down...")
+            pass
         finally:
-            await close_all()
-            logger.info("Mochi stopped.")
+            logger.info("Mochi shutting down...")
+            await self._cleanup()
+            logger.info("🍡 Mochi stopped.")
+
+    async def _cleanup(self) -> None:
+        """Close connections and clean up resources."""
+        if hasattr(self.client, 'close'):
+            await self.client.close()
+        await close_all()
+
+    async def _sync_commands(self) -> None:
+        """Push slash commands to the communication client (e.g., Telegram menu)."""
+        if hasattr(self.client, 'set_commands'):
+            agents = []
+            for a in self.registry.list_agents():
+                if a.name == "manager":
+                    continue  # Manager is internal
+                agents.append({"name": a.name, "description": a.description})
+                # Register aliases as separate commands
+                for alias in a.aliases:
+                    agents.append({"name": alias, "description": f"{a.display_name} (shortcut)"})
+            await self.client.set_commands(agents)
 
     async def _poll_loop(self) -> None:
         """Reactive loop: receive messages and route them."""
         logger.info("Poll loop started")
 
         async for message in self.client.poll():
-            if self._shutdown_event.is_set():
-                break
 
             if not message.text:
                 continue
@@ -139,11 +166,16 @@ class MochiBot:
 
     def _setup_signals(self) -> None:
         """Register signal handlers for graceful shutdown."""
+        loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                asyncio.get_event_loop().add_signal_handler(
-                    sig, lambda: self._shutdown_event.set()
-                )
+                loop.add_signal_handler(sig, self._signal_shutdown)
             except NotImplementedError:
-                # Windows doesn't support add_signal_handler
+                # Windows/WSL fallback — KeyboardInterrupt handled in cli.py
                 pass
+
+    def _signal_shutdown(self) -> None:
+        """Cancel all running tasks to trigger graceful shutdown."""
+        logger.info("Received shutdown signal")
+        for task in self._tasks:
+            task.cancel()

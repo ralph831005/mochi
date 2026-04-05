@@ -8,7 +8,7 @@ agents:
     status: active
 
   - name: nutritionist
-    display_name: "Nutritionist"
+    display_name: "Noa"
     description: "Manages daily diet tracking, macro estimation, and dietary suggestions."
     routing_keys:
       - nutrition

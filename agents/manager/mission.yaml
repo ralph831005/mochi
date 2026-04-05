@@ -4,7 +4,7 @@ description: "Routes ambiguous tasks to the appropriate specialist agent."
 routing_keys: []
 model_config:
   provider: google
-  model: gemini-2.0-flash
+  model: gemini-3.1-flash-lite-preview
   temperature: 0.2
   max_tokens: 1024
 capabilities:

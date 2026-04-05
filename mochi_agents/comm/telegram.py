@@ -138,6 +138,36 @@ class TelegramClient:
 
         return chunks
 
+    async def set_commands(self, agents: list[dict[str, str]]) -> None:
+        """Register slash commands with Telegram so they appear in the / menu.
+
+        Args:
+            agents: list of {"name": "nutritionist", "description": "Manages daily diet..."}
+        """
+        http = await self._get_http()
+
+        commands = [
+            {"command": "reload", "description": "Reload config, registry, and tools"},
+        ]
+        for agent in agents:
+            commands.append({
+                "command": agent["name"],
+                "description": agent.get("description", agent["name"])[:256],
+            })
+
+        try:
+            resp = await http.post(
+                f"{self.base_url}/setMyCommands",
+                json={"commands": commands},
+            )
+            data = resp.json()
+            if data.get("ok"):
+                logger.info(f"Registered {len(commands)} Telegram commands")
+            else:
+                logger.warning(f"Failed to set Telegram commands: {data}")
+        except Exception as e:
+            logger.error(f"Failed to set Telegram commands: {e}")
+
     async def close(self) -> None:
         """Close the HTTP client."""
         if self._http and not self._http.is_closed:

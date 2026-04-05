@@ -44,7 +44,9 @@ The MVP ships with **two agents** and the core infrastructure:
 | Scheduler | Run recurring cron jobs and one-off scheduled tasks | ✅ |
 | ToolRunner | Dynamic tool discovery and execution interface | ✅ |
 | Learner Agent | Discover and package new skills | ❌ Phase 2 |
-| SubprocessToolRunner | Sandboxed tool execution for Learner-generated code | ❌ Phase 2 |
+| Admin Agent | Self-deploy: create/edit agents, tools, and config via Telegram chat | ❌ Phase 2 |
+| `/restart` command | Self-restart after code changes (via `os.execv`) | ❌ Phase 2 |
+| SubprocessToolRunner | Sandboxed tool execution for generated code | ❌ Phase 2 |
 | Workflow Engine | Execute learned skill workflows | ❌ Phase 2 |
 | Additional Specialists | Travel, Inventory, etc. | ❌ Future |
 

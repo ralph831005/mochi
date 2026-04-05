@@ -17,6 +17,7 @@ class AgentEntry:
     display_name: str
     description: str
     routing_keys: list[str] = field(default_factory=list)
+    aliases: list[str] = field(default_factory=list)
     status: str = "active"
 
 
@@ -25,6 +26,7 @@ class Registry:
 
     def __init__(self) -> None:
         self._agents: dict[str, AgentEntry] = {}
+        self._alias_map: dict[str, str] = {}  # alias -> agent name
 
     def load(self, registry_path: Path) -> None:
         """Parse system/registry.yaml and populate agent entries."""
@@ -32,16 +34,33 @@ class Registry:
             data = yaml.safe_load(f) or {}
 
         self._agents.clear()
+        self._alias_map.clear()
         for entry in data.get("agents", []):
             agent = AgentEntry(
                 name=entry["name"],
                 display_name=entry.get("display_name", entry["name"]),
                 description=entry.get("description", ""),
                 routing_keys=entry.get("routing_keys", []),
+                aliases=entry.get("aliases", []),
                 status=entry.get("status", "active"),
             )
             if agent.status == "active":
                 self._agents[agent.name] = agent
+                for alias in agent.aliases:
+                    self._alias_map[alias.lower()] = agent.name
+
+    def load_aliases_from_missions(self, agents_dir: Path) -> None:
+        """Scan mission files for aliases and merge into the registry."""
+        for agent in self._agents.values():
+            mission_path = agents_dir / agent.name / "mission.yaml"
+            if not mission_path.exists():
+                continue
+            with open(mission_path) as f:
+                mission = yaml.safe_load(f) or {}
+            aliases = mission.get("aliases", [])
+            agent.aliases = aliases
+            for alias in aliases:
+                self._alias_map[alias.lower()] = agent.name
 
     def find_agent_by_key(self, keyword: str) -> AgentEntry | None:
         """Search routing_keys across all active agents for a keyword match."""
@@ -52,8 +71,15 @@ class Registry:
         return None
 
     def get_agent(self, name: str) -> AgentEntry | None:
-        """Return a specific agent entry by name."""
-        return self._agents.get(name)
+        """Return a specific agent entry by name or alias."""
+        agent = self._agents.get(name)
+        if agent:
+            return agent
+        # Check aliases
+        resolved = self._alias_map.get(name.lower())
+        if resolved:
+            return self._agents.get(resolved)
+        return None
 
     def list_agents(self) -> list[AgentEntry]:
         """Return all active agents."""

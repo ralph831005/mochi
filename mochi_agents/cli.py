@@ -127,7 +127,10 @@ def run_bot() -> None:
     from mochi_agents.bot import MochiBot
 
     bot = MochiBot(client=client, settings=settings)
-    asyncio.run(bot.start())
+    try:
+        asyncio.run(bot.start())
+    except KeyboardInterrupt:
+        print("\n🍡 Mochi stopped.")
 
 
 def _get_client(settings):

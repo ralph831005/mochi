@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from mochi_agents.config import get_settings, reload_settings
 from mochi_agents.core.registry import Registry
 
 if TYPE_CHECKING:
+    from typing import Callable, Awaitable
+
     from mochi_agents.core.agent_runtime import AgentRuntime
     from mochi_agents.core.tool_runner import ImportlibToolRunner
 
@@ -30,10 +33,12 @@ class Router:
         registry: Registry,
         runtime: AgentRuntime,
         tool_runner: ImportlibToolRunner,
+        on_reload: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.registry = registry
         self.runtime = runtime
         self.tool_runner = tool_runner
+        self._on_reload = on_reload
 
     async def route(self, text: str, user_id: str = "") -> str:
         """Route a message and return the agent's response text."""
@@ -42,18 +47,27 @@ class Router:
         if text.strip().startswith("/reload"):
             return await self._handle_reload()
 
-        # Step 1: Direct routing — slash commands
+        # Step 1: Direct routing — slash commands (also resolves aliases)
         if text.strip().startswith("/"):
             parts = text.strip().split(maxsplit=1)
             command = parts[0][1:]  # Remove the /
             message_body = parts[1] if len(parts) > 1 else ""
 
-            agent = self.registry.get_agent(command)
+            agent = self.registry.get_agent(command)  # Resolves aliases too
             if agent:
                 logger.info(f"Direct route (slash command): /{command} → {agent.name}")
-                return await self.runtime.execute(agent.name, message_body or text)
+                # Bare command (no body) → ask the agent for a summary/greeting
+                if not message_body:
+                    message_body = f"The user invoked /{command}. Provide a brief summary of what you can do, or show today's status."
+                return await self.runtime.execute(agent.name, message_body)
 
-        # Step 1b: Direct routing — keyword matching
+        # Step 1c: Direct routing — greeting prefix ("hey Nutritionist", "hi Mia")
+        agent, body = self._greeting_match(text)
+        if agent:
+            logger.info(f"Direct route (greeting): → {agent.name}")
+            return await self.runtime.execute(agent.name, body or text)
+
+        # Step 1d: Direct routing — keyword matching
         agent = self._keyword_match(text)
         if agent:
             logger.info(f"Direct route (keyword): → {agent.name}")
@@ -79,6 +93,37 @@ class Router:
                 best_score = score
 
         return best_agent
+
+    _GREETING_PATTERN = re.compile(
+        r"^(?:hey|hi|hello|yo|sup)\s+(.+?)(?:[,!.?]|\s|$)(.*)",
+        re.IGNORECASE,
+    )
+
+    def _greeting_match(self, text: str) -> tuple[object | None, str]:
+        """Check if message starts with a greeting + agent name/alias.
+
+        Returns (agent, remaining_message) or (None, "").
+        Examples: 'hey Nutritionist how are you' → (nutritionist_agent, 'how are you')
+                  'hi n what did I eat' → (nutritionist_agent, 'what did I eat')
+        """
+        match = self._GREETING_PATTERN.match(text.strip())
+        if not match:
+            return None, ""
+
+        name = match.group(1).strip().rstrip(",!.?")
+        rest = match.group(2).strip()
+
+        # Try resolving by name/alias
+        agent = self.registry.get_agent(name)
+        if agent:
+            return agent, rest
+
+        # Try display_name (case-insensitive)
+        for a in self.registry.list_agents():
+            if a.display_name.lower() == name.lower():
+                return a, rest
+
+        return None, ""
 
     async def _delegate_to_manager(self, text: str) -> str:
         """Use the Manager agent to determine routing, then execute the chosen agent."""
@@ -138,4 +183,8 @@ class Router:
         agents = self.registry.list_agents()
         agent_names = ", ".join(a.display_name for a in agents)
 
-        return f"🔄 Reloaded!\n• Config: ✅\n• Registry: {len(agents)} agents ({agent_names})\n• Tools: ✅\n• Missions: ✅"
+        # Sync Telegram commands
+        if self._on_reload:
+            await self._on_reload()
+
+        return f"🔄 Reloaded!\n• Config: ✅\n• Registry: {len(agents)} agents ({agent_names})\n• Tools: ✅\n• Missions: ✅\n• Commands: ✅"

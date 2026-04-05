@@ -4,7 +4,8 @@
 active_client: telegram
 
 # Telegram user IDs allowed to interact with the bot
-allowed_user_ids: []
+allowed_user_ids:
+  - 8429093155
 
 # File paths (relative to project root)
 data_dir: ./data
