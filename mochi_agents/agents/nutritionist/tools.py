@@ -17,7 +17,11 @@ from mochi_agents.memory.models import MealLog, ScheduledJob
 
 
 def get_tools() -> list:
-    """Return all tool functions for the Nutritionist agent."""
+    """Return domain-specific tool functions for the Nutritionist agent.
+
+    Note: memory tools (save_memory, recall_memories, delete_memory)
+    are auto-injected by the ToolRunner for ALL agents.
+    """
     return [log_meal, get_today_summary, get_history, search_meals, schedule_job, cancel_job]
 
 

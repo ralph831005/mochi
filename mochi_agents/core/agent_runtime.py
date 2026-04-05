@@ -67,36 +67,101 @@ class AgentRuntime:
             return soul_path.read_text()
         return ""
 
-    def _build_system_instruction(self, agent_name: str, extra_context: str = "") -> str:
-        """Assemble system instruction = Soul + Mission prompt + extra context."""
+    async def _build_system_instruction(self, agent_name: str, extra_context: str = "") -> str:
+        """Assemble system instruction = Soul + Mission prompt + Memory notes + extra context."""
         soul = self._load_soul()
         mission = self.get_mission(agent_name)
         mission_prompt = mission.get("mission_prompt", "")
 
         parts = [soul, mission_prompt]
+
+        # Inject persistent memory notes (profile, goals, preferences)
+        memory_notes = await self._load_memory_notes(agent_name)
+        if memory_notes:
+            parts.append(memory_notes)
+
         if extra_context:
             parts.append(extra_context)
 
         return "\n\n---\n\n".join(part for part in parts if part)
 
-    async def _load_memory(self, agent_name: str, limit: int = 20) -> list[dict[str, str]]:
-        """Load recent conversation messages from the agent's SQLite."""
+    async def _load_memory_notes(self, agent_name: str) -> str:
+        """Load persistent memory notes and format them for the system instruction."""
+        from sqlalchemy import select
+        from mochi_agents.memory.models import MemoryNote
+
         settings = get_settings()
         data_dir = settings.resolve_path(settings.data_dir)
         factory = get_session_factory(agent_name, data_dir)
 
-        from sqlalchemy import select
+        async with factory() as session:
+            stmt = select(MemoryNote).order_by(MemoryNote.category, MemoryNote.id)
+            result = await session.execute(stmt)
+            notes = result.scalars().all()
+
+        if not notes:
+            return ""
+
+        # Group by category
+        categories: dict[str, list[str]] = {}
+        for note in notes:
+            categories.setdefault(note.category, []).append(note.content)
+
+        # Format as markdown sections
+        section_titles = {
+            "profile": "User Profile",
+            "goal": "Active Goals",
+            "preference": "Dietary Preferences",
+        }
+
+        lines = ["## Remembered Context"]
+        for cat, items in categories.items():
+            title = section_titles.get(cat, cat.title())
+            lines.append(f"\n### {title}")
+            for item in items:
+                lines.append(f"- {item}")
+
+        return "\n".join(lines)
+
+    async def _load_memory(self, agent_name: str, limit: int = 10) -> list[dict[str, str]]:
+        """Load conversation context: [summary] + recent non-archived messages."""
+        settings = get_settings()
+        data_dir = settings.resolve_path(settings.data_dir)
+        factory = get_session_factory(agent_name, data_dir)
+
+        from sqlalchemy import select, or_
 
         async with factory() as session:
-            stmt = (
+            # Load the rolling summary (if any)
+            summary_stmt = (
                 select(ConversationMessage)
+                .where(ConversationMessage.is_summary == True)
+                .order_by(ConversationMessage.id.desc())
+                .limit(1)
+            )
+            summary_result = await session.execute(summary_stmt)
+            summary_msg = summary_result.scalar_one_or_none()
+
+            # Load recent non-archived messages
+            recent_stmt = (
+                select(ConversationMessage)
+                .where(
+                    ConversationMessage.archived == False,
+                    ConversationMessage.is_summary == False,
+                )
                 .order_by(ConversationMessage.id.desc())
                 .limit(limit)
             )
-            result = await session.execute(stmt)
-            messages = list(reversed(result.scalars().all()))
+            recent_result = await session.execute(recent_stmt)
+            recent = list(reversed(recent_result.scalars().all()))
 
-        return [{"role": msg.role, "content": msg.content} for msg in messages]
+        messages = []
+        if summary_msg:
+            messages.append({"role": "system", "content": summary_msg.content})
+        for msg in recent:
+            messages.append({"role": msg.role, "content": msg.content})
+
+        return messages
 
     async def _save_message(self, agent_name: str, role: str, content: str) -> None:
         """Save a conversation message to the agent's SQLite."""
@@ -108,6 +173,137 @@ class AgentRuntime:
             msg = ConversationMessage(role=role, content=content)
             session.add(msg)
             await session.commit()
+
+        # Check if compression is needed
+        await self._maybe_compress(agent_name)
+
+    async def _maybe_compress(self, agent_name: str, threshold: int = 10) -> None:
+        """Summarize and archive old messages when count exceeds threshold.
+
+        Flow:
+        1. Count non-archived, non-summary messages
+        2. If > threshold: load existing summary + those messages
+        3. Ask LLM to produce a new rolling summary
+        4. Archive the old messages, replace the summary row
+        """
+        settings = get_settings()
+        data_dir = settings.resolve_path(settings.data_dir)
+        factory = get_session_factory(agent_name, data_dir)
+
+        from sqlalchemy import select, func, update
+
+        async with factory() as session:
+            # Count non-archived regular messages
+            count_stmt = (
+                select(func.count())
+                .select_from(ConversationMessage)
+                .where(
+                    ConversationMessage.archived == False,
+                    ConversationMessage.is_summary == False,
+                )
+            )
+            count_result = await session.execute(count_stmt)
+            total = count_result.scalar() or 0
+
+            if total <= threshold:
+                return
+
+            logger.info(f"Compressing memory for '{agent_name}': {total} messages > {threshold}")
+
+            # Load existing summary
+            summary_stmt = (
+                select(ConversationMessage)
+                .where(ConversationMessage.is_summary == True)
+                .order_by(ConversationMessage.id.desc())
+                .limit(1)
+            )
+            summary_result = await session.execute(summary_stmt)
+            old_summary = summary_result.scalar_one_or_none()
+
+            # Load all non-archived regular messages
+            msgs_stmt = (
+                select(ConversationMessage)
+                .where(
+                    ConversationMessage.archived == False,
+                    ConversationMessage.is_summary == False,
+                )
+                .order_by(ConversationMessage.id.asc())
+            )
+            msgs_result = await session.execute(msgs_stmt)
+            all_messages = list(msgs_result.scalars().all())
+
+        # Keep the last 3 messages for conversational continuity
+        keep_count = 3
+        to_summarize = all_messages[:-keep_count]
+        # kept = all_messages[-keep_count:]  # these stay active
+
+        if not to_summarize:
+            return
+
+        # Build the summarization prompt
+        existing = old_summary.content if old_summary else "(No prior summary)"
+        conversation = "\n".join(
+            f"{m.role}: {m.content}" for m in to_summarize
+        )
+
+        summarize_prompt = (
+            "You are a memory compression assistant. "
+            "Produce a concise summary that captures key facts, preferences, "
+            "and context the agent needs to remember. Keep it under 300 words.\n\n"
+            f"## Existing Summary\n{existing}\n\n"
+            f"## New Messages\n{conversation}\n\n"
+            "## Updated Summary"
+        )
+
+        # Call LLM for summarization (use the agent's model config)
+        mission = self.get_mission(agent_name)
+        model_config = mission.get("model_config", {})
+        client = create_client(model_config)
+        model_name = get_model_name(model_config)
+
+        summary_response = client.models.generate_content(
+            model=model_name,
+            contents=summarize_prompt,
+            config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=1024),
+        )
+
+        new_summary = ""
+        if summary_response.candidates and summary_response.candidates[0].content.parts:
+            new_summary = "".join(
+                p.text for p in summary_response.candidates[0].content.parts if p.text
+            )
+
+        if not new_summary:
+            logger.warning(f"Summarization failed for '{agent_name}', skipping compression")
+            return
+
+        # Archive old messages (keep last 3) and upsert the summary
+        async with factory() as session:
+            # Only archive the summarized messages, not the kept ones
+            msg_ids = [m.id for m in to_summarize]
+            await session.execute(
+                update(ConversationMessage)
+                .where(ConversationMessage.id.in_(msg_ids))
+                .values(archived=True)
+            )
+
+            # Delete old summary and insert new one
+            if old_summary:
+                await session.execute(
+                    update(ConversationMessage)
+                    .where(ConversationMessage.id == old_summary.id)
+                    .values(content=new_summary)
+                )
+            else:
+                session.add(ConversationMessage(
+                    role="system",
+                    content=new_summary,
+                    is_summary=True,
+                ))
+
+            await session.commit()
+
+        logger.info(f"Memory compressed for '{agent_name}': {len(to_summarize)} messages archived, {keep_count} kept")
 
     def _build_tool_declarations(self, agent_name: str) -> list[types.Tool] | None:
         """Build function declarations (schemas only) for the LLM.
@@ -179,7 +375,7 @@ class AgentRuntime:
         model_config = mission.get("model_config", {})
 
         # Build system instruction
-        system_instruction = self._build_system_instruction(agent_name, extra_context)
+        system_instruction = await self._build_system_instruction(agent_name, extra_context)
 
         # Load conversation memory
         memory = await self._load_memory(agent_name)

@@ -61,6 +61,27 @@ class ImportlibToolRunner:
     def __init__(self) -> None:
         self._cache: dict[str, dict[str, ToolDeclaration]] = {}
         self._modules_path: dict[str, str] = {}
+        self._shared_tools: dict[str, ToolDeclaration] = {}
+        self._load_shared_tools()
+
+    def _load_shared_tools(self) -> None:
+        """Load tools from shared_tools.py that apply to ALL agents."""
+        from mochi_agents.core.shared_tools import get_tools
+
+        for tool_fn in get_tools():
+            name = tool_fn.__name__
+            doc = inspect.getdoc(tool_fn) or ""
+            hints = {
+                k: v.__name__ if hasattr(v, "__name__") else str(v)
+                for k, v in tool_fn.__annotations__.items()
+                if k != "return"
+            }
+            self._shared_tools[name] = ToolDeclaration(
+                name=name,
+                description=doc,
+                parameters=hints,
+                function=tool_fn,
+            )
 
     def register_agent(self, agent_name: str, tools_module: str) -> None:
         """Register the tools module path for a given agent."""
@@ -98,15 +119,26 @@ class ImportlibToolRunner:
                 function=tool_fn,
             )
 
-        self._cache[agent_name] = declarations
+        # Merge shared tools (agent-specific tools take precedence)
+        merged = dict(self._shared_tools)
+        merged.update(declarations)
+        self._cache[agent_name] = merged
 
     async def execute(self, agent_name: str, tool_name: str, args: dict) -> ToolResult:
         """Execute a tool by name."""
+        # Ensure agents without a tools_module still get shared tools
+        if agent_name not in self._cache:
+            self._cache[agent_name] = dict(self._shared_tools)
+
         declarations = self._cache.get(agent_name, {})
         tool = declarations.get(tool_name)
 
         if tool is None or tool.function is None:
             return ToolResult(success=False, error=f"Tool '{tool_name}' not found for agent '{agent_name}'")
+
+        # Set agent context for shared tools
+        from mochi_agents.core.shared_tools import set_current_agent
+        set_current_agent(agent_name)
 
         try:
             result = tool.function(**args)
@@ -118,7 +150,10 @@ class ImportlibToolRunner:
             return ToolResult(success=False, error=f"{type(e).__name__}: {e}")
 
     def get_tool_declarations(self, agent_name: str) -> list[ToolDeclaration]:
-        """Return available tools for the agent."""
+        """Return available tools for the agent (shared + domain-specific)."""
+        # Ensure agents without a tools_module still get shared tools
+        if agent_name not in self._cache:
+            self._cache[agent_name] = dict(self._shared_tools)
         return list(self._cache.get(agent_name, {}).values())
 
     def reload(self, agent_name: str | None = None) -> None:

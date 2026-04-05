@@ -28,6 +28,8 @@ class ConversationMessage(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     role: Mapped[str] = mapped_column(String(20))  # user, assistant, system
     content: Mapped[str] = mapped_column(Text)
+    archived: Mapped[bool] = mapped_column(Integer, default=False)  # SQLite stores as 0/1
+    is_summary: Mapped[bool] = mapped_column(Integer, default=False)  # rolling summary flag
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)
     )
@@ -47,6 +49,29 @@ class ScheduledJob(Base):
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending, completed, cancelled
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class MemoryNote(Base):
+    """Persistent memory notes: profile facts, goals, preferences.
+
+    Unlike conversation messages (which get archived/summarized),
+    these are always injected into the system instruction.
+
+    Categories: profile, goal, preference
+    """
+
+    __tablename__ = "memory_notes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    category: Mapped[str] = mapped_column(String(50))  # profile, goal, preference
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
     )
 
 
