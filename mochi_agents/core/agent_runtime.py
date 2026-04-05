@@ -11,6 +11,7 @@ Given an agent name and a user message, the runtime:
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -108,14 +109,64 @@ class AgentRuntime:
             session.add(msg)
             await session.commit()
 
-    def _build_tool_functions(self, agent_name: str) -> list[Any] | None:
-        """Get tool declarations and convert to Google GenAI function format."""
+    def _build_tool_declarations(self, agent_name: str) -> list[types.Tool] | None:
+        """Build function declarations (schemas only) for the LLM.
+
+        We pass schemas instead of callables so the SDK doesn't try
+        to auto-call them (which fails with async functions).
+        We handle tool execution manually via the ToolRunner.
+        """
         declarations = self.tool_runner.get_tool_declarations(agent_name)
         if not declarations:
             return None
 
-        # Return the actual callable functions for google-genai's automatic schema extraction
-        return [d.function for d in declarations if d.function is not None]
+        func_declarations = []
+        for decl in declarations:
+            # Build parameter schema from type hints
+            properties = {}
+            required = []
+            if decl.function:
+                hints = {
+                    k: v for k, v in decl.function.__annotations__.items()
+                    if k != "return"
+                }
+                sig = inspect.signature(decl.function)
+                for param_name, hint in hints.items():
+                    param_type = self._python_type_to_schema(hint)
+                    properties[param_name] = param_type
+                    # Required if no default value
+                    param = sig.parameters.get(param_name)
+                    if param and param.default is inspect.Parameter.empty:
+                        required.append(param_name)
+
+            schema = {"type": "OBJECT", "properties": properties}
+            if required:
+                schema["required"] = required
+
+            func_declarations.append(
+                types.FunctionDeclaration(
+                    name=decl.name,
+                    description=decl.description,
+                    parameters=schema,
+                )
+            )
+
+        return [types.Tool(function_declarations=func_declarations)]
+
+    @staticmethod
+    def _python_type_to_schema(hint: Any) -> dict:
+        """Convert a Python type hint to a JSON Schema-ish dict for Gemini."""
+        type_map = {
+            str: "STRING",
+            int: "INTEGER",
+            float: "NUMBER",
+            bool: "BOOLEAN",
+        }
+        type_name = getattr(hint, "__name__", str(hint))
+        for py_type, schema_type in type_map.items():
+            if hint is py_type:
+                return {"type": schema_type}
+        return {"type": "STRING"}
 
     async def execute(
         self,
@@ -152,20 +203,21 @@ class AgentRuntime:
         # Save user message to memory
         await self._save_message(agent_name, "user", user_message)
 
-        # Get tools
-        tool_functions = self._build_tool_functions(agent_name)
+        # Get tool declarations (schemas only — we handle execution manually)
+        tool_declarations = self._build_tool_declarations(agent_name)
 
         # Create LLM client and call
         client = create_client(model_config)
         model_name = get_model_name(model_config)
         gen_config = get_generation_config(model_config)
 
-        # Build the config with system instruction
+        # Build the config with system instruction — disable automatic function calling
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
             temperature=gen_config.temperature,
             max_output_tokens=gen_config.max_output_tokens,
-            tools=tool_functions,
+            tools=tool_declarations,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
 
         logger.info(f"Executing agent '{agent_name}' with model '{model_name}'")
