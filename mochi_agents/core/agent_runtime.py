@@ -553,7 +553,10 @@ class AgentRuntime:
         )
 
         # Handle tool calls in the response
-        response_text = await self._handle_response(agent_name, response, client, model_name, contents, config)
+        response_text = await self._handle_response(
+            agent_name, response, client, model_name, contents, config,
+            user_id=user_id,
+        )
 
         # Save assistant response to memory (skip for stateless agents)
         if not is_stateless:
@@ -570,6 +573,7 @@ class AgentRuntime:
         contents: list,
         config: Any,
         max_turns: int = 10,
+        user_id: str = "",
     ) -> str:
         """Process LLM response, executing tool calls in a loop if needed.
 
@@ -582,6 +586,13 @@ class AgentRuntime:
         """
         mission = self.get_mission(agent_name)
         tool_loop_enabled = mission.get("tool_loop", True)
+
+        # Runtime context variables for auto-injection into tool args
+        context_vars = {"user_id": user_id}
+
+        # Pre-load tool declarations for signature introspection
+        declarations = self.tool_runner.get_tool_declarations(agent_name)
+        decl_by_name = {d.name: d for d in declarations} if declarations else {}
 
         for turn in range(max_turns):
             if not response.candidates:
@@ -608,6 +619,15 @@ class AgentRuntime:
             for fc in function_calls:
                 tool_name = fc.name
                 args = dict(fc.args) if fc.args else {}
+
+                # Auto-inject context variables (e.g., user_id) into tool args
+                # when the tool function accepts them but the LLM didn't provide them
+                decl = decl_by_name.get(tool_name)
+                if decl and decl.function:
+                    sig = inspect.signature(decl.function)
+                    for param_name, value in context_vars.items():
+                        if param_name in sig.parameters and param_name not in args:
+                            args[param_name] = value
 
                 logger.info(f"Agent '{agent_name}' calling tool '{tool_name}' with args: {args}")
                 result = await self.tool_runner.execute(agent_name, tool_name, args)

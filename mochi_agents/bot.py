@@ -155,6 +155,7 @@ class MochiBot:
 
         logger.info("Poll loop started")
         tracker = get_tracker()
+        location_acked: set[str] = set()  # user_ids we've already acknowledged
 
         async for message in self.client.poll():
             try:
@@ -162,7 +163,7 @@ class MochiBot:
                 if message.location:
                     lat = message.location["latitude"]
                     lon = message.location["longitude"]
-                    logger.info(
+                    logger.debug(
                         f"Location update: [{message.user_id}] "
                         f"({lat:.5f}, {lon:.5f})"
                     )
@@ -176,6 +177,32 @@ class MochiBot:
                         await self._handle_geofence_event(
                             event, message.user_id, message.chat_id,
                         )
+
+                    # Acknowledge only the FIRST location update per user session
+                    if message.user_id not in location_acked:
+                        location_acked.add(message.user_id)
+                        zones = await tracker.list_geofences(message.user_id)
+                        if zones:
+                            zone_list = ", ".join(z["name"] for z in zones)
+                            await self.client.send(
+                                message.chat_id,
+                                f"📍 Location received! Tracking against "
+                                f"{len(zones)} zone(s): {zone_list}\n"
+                                f"I'll notify you on enter/exit events.",
+                            )
+                        else:
+                            await self.client.send(
+                                message.chat_id,
+                                "📍 Location received! I'm tracking your position.\n\n"
+                                "You don't have any zones set up yet. "
+                                "Talk to Sora to create some:\n"
+                                '• "Set my home at my current location"\n'
+                                '• "Set office at my current location"\n'
+                                '• "Set Costco at 37.43, -122.17"\n\n'
+                                "Then add reminders like:\n"
+                                '• "Remind me to buy eggs when I\'m at Costco"\n'
+                                '• "When I leave office, remind me to stop by Costco"',
+                            )
 
                     # If message also has text, route it normally (unusual)
                     if not message.text:
