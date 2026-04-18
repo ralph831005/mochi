@@ -388,3 +388,37 @@ async def reconfigure_agent_model(
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Location awareness (available to all agents)
+# ---------------------------------------------------------------------------
+
+async def get_user_location(user_id: str = "") -> dict[str, Any]:
+    """Return the user's last known GPS location and how recent it is.
+
+    Requires the user to have shared their live location via Telegram.
+    Returns latitude, longitude, timestamp, and age in seconds.
+    """
+    import time as _time
+    from datetime import datetime, timezone
+    from mochi_agents.core.location import get_tracker
+
+    tracker = get_tracker()
+    pos = tracker.get_position(user_id)
+    if pos is None:
+        return {
+            "status": "unknown",
+            "message": "No location data available. The user hasn't shared their live location.",
+        }
+
+    age_sec = _time.time() - pos.timestamp
+    ts = datetime.fromtimestamp(pos.timestamp, tz=timezone.utc)
+
+    return {
+        "latitude": pos.latitude,
+        "longitude": pos.longitude,
+        "timestamp": ts.isoformat(),
+        "age_seconds": round(age_sec, 1),
+    }
+
