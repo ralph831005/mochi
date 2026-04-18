@@ -28,6 +28,7 @@ class Settings(BaseModel):
     # --- From secret.yaml ---
     gemini_api_key: str = ""
     telegram_bot_token: str = ""
+    api_keys: dict[str, str] = Field(default_factory=dict)  # named key registry
 
     # --- From config.yaml ---
     active_client: str = "telegram"
@@ -35,12 +36,15 @@ class Settings(BaseModel):
     data_dir: Path = Path("./data")
     agents_dir: Path = Path("./agents")
     system_dir: Path = Path("./system")
+    dashboard_port: int = 8080
+    dashboard_enabled: bool = True
 
     # Internal: project root (not from YAML)
     project_root: Path = Field(default_factory=_find_project_root)
 
-    def resolve_path(self, relative: Path) -> Path:
+    def resolve_path(self, relative: Path | str) -> Path:
         """Resolve a relative path against the project root."""
+        relative = Path(relative)
         if relative.is_absolute():
             return relative
         return self.project_root / relative
@@ -95,3 +99,35 @@ def reload_settings() -> Settings:
     root = _settings.project_root if _settings else _find_project_root()
     _settings = load_settings(project_root=root)
     return _settings
+
+
+def set_api_key(name: str, key: str) -> None:
+    """Save an API key to secret.yaml and reload settings."""
+    settings = get_settings()
+    secret_path = settings.project_root / "secret.yaml"
+
+    secret_data = _load_yaml(secret_path)
+    if not isinstance(secret_data.get("api_keys"), dict):
+        secret_data["api_keys"] = {}
+
+    secret_data["api_keys"][name] = key
+
+    with open(secret_path, "w") as f:
+        yaml.dump(secret_data, f, default_flow_style=False)
+
+    reload_settings()
+
+
+def remove_api_key(name: str) -> bool:
+    """Remove an API key from secret.yaml and reload settings. Returns True if removed."""
+    settings = get_settings()
+    secret_path = settings.project_root / "secret.yaml"
+
+    secret_data = _load_yaml(secret_path)
+    if isinstance(secret_data.get("api_keys"), dict) and name in secret_data["api_keys"]:
+        del secret_data["api_keys"][name]
+        with open(secret_path, "w") as f:
+            yaml.dump(secret_data, f, default_flow_style=False)
+        reload_settings()
+        return True
+    return False

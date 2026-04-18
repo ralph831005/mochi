@@ -1,0 +1,1796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🍡 Mochi Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0f0f13;
+            --bg-secondary: #1a1a24;
+            --bg-card: #22223a;
+            --bg-card-hover: #2a2a45;
+            --bg-input: #181828;
+            --border: #2e2e4a;
+            --text-primary: #e8e8f0;
+            --text-secondary: #9090b0;
+            --text-muted: #606080;
+            --accent: #7c5cfc;
+            --accent-hover: #9070ff;
+            --accent-glow: rgba(124, 92, 252, 0.15);
+            --success: #34d399;
+            --danger: #f87171;
+            --warning: #fbbf24;
+            --radius: 12px;
+            --radius-sm: 8px;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        /* Layout */
+        .app { display: flex; min-height: 100vh; }
+
+        .sidebar {
+            width: 220px;
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border);
+            padding: 24px 0;
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            height: 100vh;
+        }
+
+        .sidebar-logo {
+            font-size: 24px;
+            font-weight: 700;
+            padding: 0 24px 24px;
+            border-bottom: 1px solid var(--border);
+            color: var(--accent);
+        }
+
+        .sidebar-nav { padding: 16px 12px; flex: 1; }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 16px;
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.15s;
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 2px;
+        }
+
+        .nav-item:hover { background: var(--bg-card); color: var(--text-primary); }
+        .nav-item.active { background: var(--accent-glow); color: var(--accent); }
+        .nav-item .icon { font-size: 18px; width: 24px; text-align: center; }
+
+        .main { margin-left: 220px; flex: 1; padding: 32px; }
+
+        .page { display: none; }
+        .page.active { display: block; }
+
+        .page-title {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .page-subtitle {
+            color: var(--text-secondary);
+            margin-bottom: 24px;
+            font-size: 14px;
+        }
+
+        /* Cards */
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+            transition: all 0.2s;
+        }
+
+        .card:hover { border-color: var(--accent); background: var(--bg-card-hover); }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .card-title { font-size: 16px; font-weight: 600; }
+        .card-badge {
+            font-size: 11px;
+            padding: 3px 8px;
+            border-radius: 20px;
+            background: var(--accent-glow);
+            color: var(--accent);
+            font-weight: 500;
+        }
+
+        .card-body { color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
+
+        .card-meta {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            gap: 16px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .card-meta span { display: flex; align-items: center; gap: 4px; }
+
+        /* Stat cards */
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 32px;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+        }
+
+        .stat-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; }
+        .stat-value { font-size: 32px; font-weight: 700; margin-top: 4px; color: var(--accent); }
+        .stat-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+
+        /* Tables */
+        .table-wrap {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+
+        table { width: 100%; border-collapse: collapse; }
+        th {
+            text-align: left;
+            padding: 12px 16px;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+        }
+
+        td {
+            padding: 12px 16px;
+            font-size: 13px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        tr:last-child td { border-bottom: none; }
+        tr:hover td { background: var(--bg-card-hover); }
+
+        /* Buttons */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 16px;
+            border-radius: var(--radius-sm);
+            font-size: 13px;
+            font-weight: 500;
+            border: none;
+            cursor: pointer;
+            transition: all 0.15s;
+            font-family: inherit;
+        }
+
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-primary:hover { background: var(--accent-hover); }
+        .btn-danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+        .btn-danger:hover { background: var(--danger); color: white; }
+        .btn-sm { padding: 5px 10px; font-size: 12px; }
+
+        /* Tags */
+        .tag {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            background: var(--bg-input);
+            color: var(--text-secondary);
+            margin: 2px;
+        }
+
+        /* Config items */
+        .config-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .config-item:last-child { border-bottom: none; }
+        .config-key { font-weight: 500; font-size: 14px; }
+        .config-val { color: var(--text-secondary); font-size: 13px; font-family: monospace; }
+
+        /* Loading */
+        .loading {
+            text-align: center;
+            padding: 60px;
+            color: var(--text-muted);
+        }
+
+        .loading::after {
+            content: '';
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+            margin-left: 8px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: var(--bg-card);
+            border: 1px solid var(--accent);
+            color: var(--text-primary);
+            padding: 12px 20px;
+            border-radius: var(--radius-sm);
+            font-size: 13px;
+            z-index: 1000;
+            opacity: 0;
+            transform: translateY(10px);
+            transition: all 0.3s;
+        }
+
+        .toast.show { opacity: 1; transform: translateY(0); }
+
+        /* Chat */
+        .chat-container {
+            display: flex;
+            flex-direction: column;
+            height: calc(100vh - 140px);
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .chat-messages::-webkit-scrollbar { width: 6px; }
+        .chat-messages::-webkit-scrollbar-track { background: transparent; }
+        .chat-messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        .chat-msg {
+            max-width: 80%;
+            padding: 10px 14px;
+            border-radius: var(--radius);
+            font-size: 13px;
+            line-height: 1.6;
+            animation: fadeIn 0.2s ease;
+        }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+        .chat-msg.user {
+            align-self: flex-end;
+            background: var(--accent);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .chat-msg.agent {
+            align-self: flex-start;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-bottom-left-radius: 4px;
+            white-space: pre-wrap;
+        }
+
+        .chat-msg.agent .agent-name {
+            font-size: 11px;
+            color: var(--accent);
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .chat-msg.system {
+            align-self: center;
+            color: var(--text-muted);
+            font-size: 12px;
+            font-style: italic;
+        }
+
+        .chat-input-area {
+            display: flex;
+            gap: 8px;
+            padding: 16px 20px;
+            border-top: 1px solid var(--border);
+            background: var(--bg-secondary);
+        }
+
+        .chat-input {
+            flex: 1;
+            padding: 10px 14px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+            background: var(--bg-input);
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 13px;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+
+        .chat-input:focus { border-color: var(--accent); }
+        .chat-input::placeholder { color: var(--text-muted); }
+
+        .chat-send {
+            padding: 10px 20px;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+
+        .chat-send:hover { background: var(--accent-hover); }
+        .chat-send:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .typing-indicator {
+            display: inline-flex;
+            gap: 4px;
+            padding: 8px 14px;
+        }
+
+        .typing-indicator span {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--text-muted);
+            animation: typing 1.2s ease infinite;
+        }
+
+        .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+        .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes typing {
+            0%, 60%, 100% { transform: translateY(0); }
+            30% { transform: translateY(-4px); }
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .sidebar { width: 60px; }
+            .sidebar-logo { font-size: 18px; padding: 0 8px 16px; text-align: center; }
+            .nav-item span:not(.icon) { display: none; }
+            .main { margin-left: 60px; padding: 16px; }
+            .card-grid { grid-template-columns: 1fr; }
+            .stat-grid { grid-template-columns: 1fr 1fr; }
+            .office-floor { min-height: 260px !important; }
+            .agent-desk { transform: scale(0.75); }
+        }
+
+        /* ================================================================
+           Mochi Office Scene
+           ================================================================ */
+        .office-scene {
+            margin-top: 24px;
+            background: linear-gradient(180deg, #181830 0%, #1e1e3a 40%, #252548 100%);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+            position: relative;
+        }
+
+        .office-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 20px;
+            background: rgba(124, 92, 252, 0.06);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .office-title {
+            font-weight: 600;
+            font-size: 15px;
+            color: var(--text-primary);
+        }
+
+        .office-clock {
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            color: var(--accent);
+            background: rgba(124, 92, 252, 0.1);
+            padding: 4px 10px;
+            border-radius: 6px;
+            animation: clockPulse 2s ease-in-out infinite;
+        }
+
+        @keyframes clockPulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .office-floor {
+            position: relative;
+            min-height: 340px;
+            padding: 30px 24px 24px;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 16px;
+            align-items: flex-end;
+        }
+
+        /* Ambient particles */
+        .office-particles {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            overflow: hidden;
+        }
+
+        .particle {
+            position: absolute;
+            width: 3px;
+            height: 3px;
+            background: var(--accent);
+            border-radius: 50%;
+            opacity: 0;
+            animation: particleFloat linear infinite;
+        }
+
+        @keyframes particleFloat {
+            0% { opacity: 0; transform: translateY(0) scale(0.5); }
+            15% { opacity: 0.4; }
+            85% { opacity: 0.15; }
+            100% { opacity: 0; transform: translateY(-180px) scale(0); }
+        }
+
+        /* Agent Desk */
+        .agent-desk {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            position: relative;
+            width: 130px;
+            transition: transform 0.3s ease;
+            cursor: default;
+        }
+
+        .agent-desk:hover {
+            transform: translateY(-6px);
+        }
+
+        .agent-desk:hover .desk-character {
+            animation-play-state: paused;
+        }
+
+        .agent-desk:hover .speech-bubble {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+        }
+
+        /* Character avatar circle */
+        .desk-character {
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+            margin-bottom: 6px;
+            position: relative;
+            z-index: 2;
+            animation: charBob 3s ease-in-out infinite;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+
+        @keyframes charBob {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-5px); }
+        }
+
+        /* Activity ring */
+        .desk-character::after {
+            content: '';
+            position: absolute;
+            inset: -4px;
+            border-radius: 50%;
+            border: 2px solid transparent;
+            border-top-color: var(--accent);
+            animation: activityRing 3s linear infinite;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .agent-desk.active .desk-character::after {
+            opacity: 0.7;
+        }
+
+        @keyframes activityRing {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Typing dots under active character */
+        .typing-dots {
+            display: flex;
+            gap: 3px;
+            position: absolute;
+            bottom: -2px;
+            left: 50%;
+            transform: translateX(-50%);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .agent-desk.active .typing-dots { opacity: 1; }
+
+        .typing-dots span {
+            width: 4px;
+            height: 4px;
+            border-radius: 50%;
+            background: var(--accent);
+            animation: typing 1.2s ease infinite;
+        }
+        .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+        /* Desk surface */
+        .desk-surface {
+            width: 110px;
+            height: 28px;
+            background: linear-gradient(135deg, #3a3060 0%, #2d2850 100%);
+            border-radius: 8px 8px 4px 4px;
+            position: relative;
+            z-index: 1;
+            border: 1px solid rgba(124, 92, 252, 0.15);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        /* Tiny desk items */
+        .desk-item {
+            font-size: 10px;
+            opacity: 0.7;
+        }
+
+        /* Name tag */
+        .desk-nametag {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-top: 6px;
+            text-align: center;
+        }
+
+        .desk-role {
+            font-size: 9px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 2px;
+        }
+
+        /* Speech bubble */
+        .speech-bubble {
+            position: absolute;
+            top: -44px;
+            left: 50%;
+            transform: translateY(8px) translateX(-50%) scale(0.9);
+            background: var(--bg-card);
+            border: 1px solid var(--accent);
+            border-radius: 10px;
+            padding: 5px 10px;
+            font-size: 10px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            opacity: 0;
+            transition: all 0.25s ease;
+            z-index: 10;
+            pointer-events: none;
+        }
+
+        .speech-bubble::after {
+            content: '';
+            position: absolute;
+            bottom: -5px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 0;
+            height: 0;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-top: 5px solid var(--accent);
+        }
+
+        /* Role-specific styles */
+        .agent-desk[data-role="front-desk"] .desk-character {
+            background: linear-gradient(135deg, #ff9a9e 0%, #fad0c4 100%);
+            animation-duration: 2.5s;
+        }
+
+        .agent-desk[data-role="front-desk"] .desk-surface {
+            background: linear-gradient(135deg, #594050 0%, #483848 100%);
+            border-color: rgba(255, 154, 158, 0.2);
+            border-radius: 12px 12px 4px 4px;
+            width: 120px;
+        }
+
+        .agent-desk[data-role="boss"] .desk-character {
+            background: linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%);
+            animation-duration: 4s;
+        }
+
+        .agent-desk[data-role="boss"] .desk-surface {
+            background: linear-gradient(135deg, #453568 0%, #352850 100%);
+            border-color: rgba(161, 140, 209, 0.25);
+            width: 120px;
+        }
+
+        .agent-desk[data-role="employee"] .desk-character {
+            background: linear-gradient(135deg, #89f7fe 0%, #66a6ff 100%);
+        }
+
+        .agent-desk[data-role="learner"] .desk-character {
+            background: linear-gradient(135deg, #f6d365 0%, #fda085 100%);
+            animation-duration: 2s;
+        }
+
+        /* Status indicator dot */
+        .status-dot {
+            position: absolute;
+            bottom: 2px;
+            right: 2px;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--success);
+            border: 2px solid #1e1e3a;
+            z-index: 3;
+        }
+
+        .status-dot.idle {
+            background: var(--warning);
+            animation: idlePulse 2s ease-in-out infinite;
+        }
+
+        @keyframes idlePulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-logo">🍡 Mochi</div>
+            <nav class="sidebar-nav">
+                <div class="nav-item active" data-page="status">
+                    <span class="icon">📊</span><span>Status</span>
+                </div>
+                <div class="nav-item" data-page="agents">
+                    <span class="icon">🤖</span><span>Agents</span>
+                </div>
+                <div class="nav-item" data-page="shortcuts">
+                    <span class="icon">⚡</span><span>Shortcuts</span>
+                </div>
+                <div class="nav-item" data-page="aliases">
+                    <span class="icon">🔗</span><span>Aliases</span>
+                </div>
+                <div class="nav-item" data-page="schedules">
+                    <span class="icon">🕐</span><span>Schedules</span>
+                </div>
+                <div class="nav-item" data-page="config">
+                    <span class="icon">⚙️</span><span>Config</span>
+                </div>
+                <div class="nav-item" data-page="chat">
+                    <span class="icon">💬</span><span>Chat</span>
+                </div>
+            </nav>
+        </aside>
+
+        <!-- Main content -->
+        <main class="main">
+            <!-- Status page -->
+            <div id="page-status" class="page active">
+                <h1 class="page-title">Dashboard</h1>
+                <p class="page-subtitle">System overview</p>
+                <div class="stat-grid" id="status-stats"></div>
+
+                <!-- Mochi Office Animation -->
+                <div class="office-scene" id="office-scene">
+                    <div class="office-header">
+                        <span class="office-title">🏢 Mochi Office</span>
+                        <span class="office-clock" id="office-clock">--:--</span>
+                    </div>
+                    <div class="office-floor" id="office-floor">
+                        <!-- Pixel art background canvas -->
+                        <canvas id="office-canvas" style="position:absolute;inset:0;width:100%;height:100%;z-index:0;image-rendering:pixelated;"></canvas>
+                        <!-- Ambient particles -->
+                        <div class="office-particles" id="office-particles"></div>
+                        <!-- Agent desks populated by JS -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Agents page -->
+            <div id="page-agents" class="page">
+                <h1 class="page-title">Agents</h1>
+                <p class="page-subtitle">Registered agents and their configuration</p>
+                <div class="card-grid" id="agents-grid"></div>
+            </div>
+
+            <!-- Shortcuts page -->
+            <div id="page-shortcuts" class="page">
+                <h1 class="page-title">Shortcuts</h1>
+                <p class="page-subtitle">LLM-free quick actions</p>
+                <div id="shortcuts-content"></div>
+            </div>
+
+            <!-- Aliases page -->
+            <div id="page-aliases" class="page">
+                <h1 class="page-title">Aliases</h1>
+                <p class="page-subtitle">Global command aliases</p>
+                <div id="aliases-content"></div>
+            </div>
+
+            <!-- Schedules page -->
+            <div id="page-schedules" class="page">
+                <h1 class="page-title">Schedules</h1>
+                <p class="page-subtitle">Cron jobs and automated tasks</p>
+                <div id="schedules-content"></div>
+            </div>
+
+            <!-- Config page -->
+            <div id="page-config" class="page">
+                <h1 class="page-title">Configuration</h1>
+                <p class="page-subtitle">System settings</p>
+                <div class="table-wrap" id="config-content" style="margin-bottom: 24px;"></div>
+                
+                <h2 style="font-size: 16px; margin-bottom: 12px;">API Keys Manager</h2>
+                <div class="card" style="margin-bottom: 24px;">
+                    <div class="card-body">
+                        <div id="api-keys-list" style="margin-bottom: 16px;"></div>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="new-key-name" class="chat-input" placeholder="Key name (e.g. pro)" style="max-width: 150px;">
+                            <input type="password" id="new-key-value" class="chat-input" placeholder="API key value (sk-...)">
+                            <button class="btn btn-primary" onclick="addApiKey()">Add Key</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Chat page -->
+            <div id="page-chat" class="page">
+                <h1 class="page-title">Chat</h1>
+                <p class="page-subtitle">Talk to your agents directly</p>
+                <div class="chat-container">
+                    <div class="chat-messages" id="chat-messages">
+                        <div class="chat-msg system">Send a message to any agent. Use /agent_name or just type naturally.</div>
+                    </div>
+                    <div class="chat-input-area">
+                        <input type="text" class="chat-input" id="chat-input" placeholder="Type a message... (e.g. /noa, /admin status)" autocomplete="off">
+                        <button class="chat-send" id="chat-send" onclick="sendChat()">Send</button>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+    // ---------------------------------------------------------------------------
+    // Navigation
+    // ---------------------------------------------------------------------------
+    const navItems = document.querySelectorAll('.nav-item');
+    const pages = document.querySelectorAll('.page');
+
+    navItems.forEach(item => {
+        item.addEventListener('click', () => {
+            const page = item.dataset.page;
+            navItems.forEach(n => n.classList.remove('active'));
+            pages.forEach(p => p.classList.remove('active'));
+            item.classList.add('active');
+            document.getElementById(`page-${page}`).classList.add('active');
+            loadPage(page);
+        });
+    });
+
+    function showToast(msg) {
+        const t = document.getElementById('toast');
+        t.textContent = msg;
+        t.classList.add('show');
+        setTimeout(() => t.classList.remove('show'), 3000);
+    }
+
+    async function api(method, path, body) {
+        const opts = { method, headers: { 'Content-Type': 'application/json' } };
+        if (body) opts.body = JSON.stringify(body);
+        const resp = await fetch(path, opts);
+        return resp.json();
+    }
+
+    function formatUptime(seconds) {
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        if (h > 0) return `${h}h ${m}m`;
+        return `${m}m`;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Page loaders
+    // ---------------------------------------------------------------------------
+    async function loadPage(page) {
+        switch (page) {
+            case 'status': return loadStatus();
+            case 'agents': return loadAgents();
+            case 'shortcuts': return loadShortcuts();
+            case 'aliases': return loadAliases();
+            case 'schedules': return loadSchedules();
+            case 'config': return loadConfig();
+            case 'chat': return initChat();
+        }
+    }
+
+    async function loadStatus() {
+        const data = await api('GET', '/api/status');
+        document.getElementById('status-stats').innerHTML = `
+            <div class="stat-card">
+                <div class="stat-label">Status</div>
+                <div class="stat-value" style="color:var(--success)">●</div>
+                <div class="stat-sub">Running</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Uptime</div>
+                <div class="stat-value">${formatUptime(data.uptime_seconds)}</div>
+                <div class="stat-sub">${data.uptime_seconds}s total</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Agents</div>
+                <div class="stat-value">${data.agent_count}</div>
+                <div class="stat-sub">${data.agents.join(', ')}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Shortcuts</div>
+                <div class="stat-value">${data.shortcuts_count}</div>
+                <div class="stat-sub">Active quick actions</div>
+            </div>
+        `;
+        // Render the Mochi Office scene
+        await renderOffice();
+        initPixelOffice();
+    }
+
+    async function loadAgents() {
+        const agents = await api('GET', '/api/agents');
+        const grid = document.getElementById('agents-grid');
+        grid.innerHTML = agents.map(a => `
+            <div class="card" id="agent-card-${a.name}">
+                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <span class="card-title">${a.display_name}</span>
+                        <span class="card-badge">${a.status}</span>
+                    </div>
+                    <button class="btn btn-sm" style="border: 1px solid var(--border); background: var(--bg-secondary); color: var(--text-primary); cursor: pointer;" onclick="openAgentEdit('${a.name}', '${a.model}', '${a.temperature}')">⚙️ Edit Config</button>
+                </div>
+                <div class="card-body">
+                    <p>${a.description}</p>
+                    <div style="margin-top:8px">
+                        ${a.routing_keys.slice(0, 8).map(k => `<span class="tag">${k}</span>`).join('')}
+                        ${a.routing_keys.length > 8 ? `<span class="tag">+${a.routing_keys.length - 8}</span>` : ''}
+                    </div>
+                </div>
+                <div class="card-meta" id="agent-meta-${a.name}">
+                    <span>🧠 ${a.model}</span>
+                    <span>🌡️ ${a.temperature}</span>
+                    <span>⚡ ${a.shortcuts.length} shortcuts</span>
+                </div>
+                <div id="agent-edit-${a.name}" style="display: none; padding: 12px; background: var(--bg-secondary); border-top: 1px solid var(--border); font-size: 13px;">
+                    <div style="margin-bottom: 8px;">
+                        <label style="display:block;margin-bottom:4px;color:var(--text-secondary)">Model Name</label>
+                        <input type="text" list="valid-models" id="edit-model-${a.name}" class="chat-input" value="${a.model}" style="width:100%;">
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <label style="display:block;margin-bottom:4px;color:var(--text-secondary)">API Key Name (e.g. default, pro)</label>
+                        <input type="text" id="edit-apikey-${a.name}" class="chat-input" placeholder="Leave empty for default" style="width:100%;">
+                    </div>
+                    <div style="margin-bottom: 12px;">
+                        <label style="display:block;margin-bottom:4px;color:var(--text-secondary)">Temperature</label>
+                        <input type="number" step="0.1" id="edit-temp-${a.name}" class="chat-input" value="${a.temperature}" style="width:100px;">
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn btn-primary btn-sm" onclick="saveAgentEdit('${a.name}')">Save</button>
+                        <button class="btn btn-sm" onclick="cancelAgentEdit('${a.name}')">Cancel</button>
+                    </div>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    window.openAgentEdit = function(name, currentModel, currentTemp) {
+        document.getElementById(`agent-meta-${name}`).style.display = 'none';
+        document.getElementById(`agent-edit-${name}`).style.display = 'block';
+    };
+
+    window.cancelAgentEdit = function(name) {
+        document.getElementById(`agent-meta-${name}`).style.display = 'flex';
+        document.getElementById(`agent-edit-${name}`).style.display = 'none';
+    };
+
+    window.saveAgentEdit = async function(name) {
+        const model = document.getElementById(`edit-model-${name}`).value.trim();
+        const api_key = document.getElementById(`edit-apikey-${name}`).value.trim();
+        const temp = document.getElementById(`edit-temp-${name}`).value.trim();
+
+        const updates = {};
+        if (model) updates.model = model;
+        if (api_key) updates.api_key = api_key;
+        if (temp) updates.temperature = parseFloat(temp);
+
+        const r = await api('PUT', `/api/agents/${name}/model`, updates);
+        if (r.status === 'ok') {
+            showToast('Agent config updated permanently!');
+            loadAgents();
+        } else {
+            showToast('Error: ' + r.error);
+        }
+    };
+
+    async function loadValidModels() {
+        if (!document.getElementById('valid-models')) {
+            const r = await api('GET', '/api/models');
+            if (r.models) {
+                const datalist = document.createElement('datalist');
+                datalist.id = 'valid-models';
+                datalist.innerHTML = r.models.map(m => `<option value="${m}">`).join('');
+                document.body.appendChild(datalist);
+            }
+        }
+    }
+
+    async function loadShortcuts() {
+        const data = await api('GET', '/api/shortcuts');
+        const el = document.getElementById('shortcuts-content');
+
+        if (!Object.keys(data).length) {
+            el.innerHTML = '<div class="card"><div class="card-body">No shortcuts configured. Add them via agent mission.yaml or the create_shortcut tool.</div></div>';
+            return;
+        }
+
+        let html = '';
+        for (const [agent, info] of Object.entries(data)) {
+            html += `<h3 style="margin:16px 0 8px;color:var(--text-secondary)">${info.display_name}</h3>`;
+            for (const [cmd, def] of Object.entries(info.shortcuts)) {
+                const fields = (def.fields || []).map(f => `<span class="tag">${f.label || f.name} (${f.type || 'string'})</span>`).join('');
+                html += `
+                    <div class="card" style="margin-bottom:8px">
+                        <div class="card-header">
+                            <span class="card-title">/${agent} ${cmd}</span>
+                            <button class="btn btn-danger btn-sm" onclick="deleteShortcut('${agent}','${cmd}')">Delete</button>
+                        </div>
+                        <div class="card-body">
+                            <p>${def.description || cmd}</p>
+                            <div style="margin-top:8px">${fields}</div>
+                        </div>
+                        <div class="card-meta">
+                            <span>🔧 ${def.on_complete?.tool || '—'}</span>
+                        </div>
+                    </div>`;
+            }
+        }
+        el.innerHTML = html;
+    }
+
+    async function deleteShortcut(agent, cmd) {
+        if (!confirm(`Delete /${agent} ${cmd}?`)) return;
+        const r = await api('DELETE', `/api/shortcuts/${agent}/${cmd}`);
+        showToast(r.status === 'ok' ? 'Shortcut deleted' : r.message);
+        loadShortcuts();
+    }
+
+    async function loadAliases() {
+        const data = await api('GET', '/api/aliases');
+        const el = document.getElementById('aliases-content');
+
+        const entries = Object.entries(data);
+        if (!entries.length) {
+            el.innerHTML = '<div class="card"><div class="card-body">No aliases configured. Use Admin\'s add_alias tool to create global command shortcuts.</div></div>';
+            return;
+        }
+
+        el.innerHTML = `
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Alias</th><th>Agent</th><th>Shortcut</th><th></th></tr></thead>
+                    <tbody>
+                        ${entries.map(([alias, info]) => `
+                            <tr>
+                                <td><code>/${alias}</code></td>
+                                <td>${info.agent}</td>
+                                <td>${info.shortcut}</td>
+                                <td><button class="btn btn-danger btn-sm" onclick="deleteAlias('${alias}')">Remove</button></td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>`;
+    }
+
+    async function deleteAlias(alias) {
+        if (!confirm(`Remove /${alias}?`)) return;
+        const r = await api('DELETE', `/api/aliases/${alias}`);
+        showToast(r.status === 'ok' ? 'Alias removed' : r.message);
+        loadAliases();
+    }
+
+    async function loadSchedules() {
+        const data = await api('GET', '/api/schedules');
+        const el = document.getElementById('schedules-content');
+
+        const entries = Object.entries(data);
+        if (!entries.length) {
+            el.innerHTML = '<div class="card"><div class="card-body">No scheduled tasks configured.</div></div>';
+            return;
+        }
+
+        el.innerHTML = `
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Agent</th><th>Name</th><th>Cron</th><th>Action</th><th>Target</th></tr></thead>
+                    <tbody>
+                        ${entries.flatMap(([agent, info]) =>
+                            info.schedules.map(s => `
+                                <tr>
+                                    <td>${info.display_name}</td>
+                                    <td>${s.name}</td>
+                                    <td><code>${s.cron}</code></td>
+                                    <td>${s.action}</td>
+                                    <td>${s.target_user_ids || 'all'}</td>
+                                </tr>
+                            `)
+                        ).join('')}
+                    </tbody>
+                </table>
+            </div>`;
+    }
+
+    async function loadConfig() {
+        const data = await api('GET', '/api/config');
+        
+        // Main config table (excluding api_keys object)
+        const el = document.getElementById('config-content');
+        const items = Object.entries(data)
+            .filter(([key]) => key !== 'api_keys')
+            .map(([key, val]) => `
+                <div class="config-item">
+                    <span class="config-key">${key}</span>
+                    <span class="config-val">${Array.isArray(val) ? val.join(', ') : val}</span>
+                </div>
+            `).join('');
+        el.innerHTML = items;
+
+        // API keys manager
+        if (data.api_keys) {
+            const keysEl = document.getElementById('api-keys-list');
+            if (Object.keys(data.api_keys).length === 0) {
+                keysEl.innerHTML = '<span style="color:var(--text-muted)">No named keys configured. Add one below.</span>';
+            } else {
+                keysEl.innerHTML = Object.entries(data.api_keys).map(([name, masked]) => `
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border);">
+                        <div>
+                            <strong>${name}</strong>
+                            <code style="margin-left:8px; color:var(--text-secondary)">${masked}</code>
+                        </div>
+                        <button class="btn btn-danger btn-sm" onclick="deleteApiKey('${name}')">Delete</button>
+                    </div>
+                `).join('');
+            }
+        }
+    }
+
+    async function addApiKey() {
+        const nameInput = document.getElementById('new-key-name');
+        const valueInput = document.getElementById('new-key-value');
+        const name = nameInput.value.trim();
+        const value = valueInput.value.trim();
+        
+        if (!name || !value) {
+            showToast('Name and key value are required');
+            return;
+        }
+
+        const r = await api('POST', '/api/keys', { name, key: value });
+        if (r.status === 'ok') {
+            nameInput.value = '';
+            valueInput.value = '';
+            showToast('API key added');
+            loadConfig();
+        } else {
+            showToast('Error: ' + r.error);
+        }
+    }
+
+    async function deleteApiKey(name) {
+        if (!confirm(`Are you sure you want to delete API key '${name}'?`)) return;
+        
+        const r = await api('DELETE', `/api/keys/${name}`);
+        if (r.status === 'ok') {
+            showToast('API key deleted');
+            loadConfig();
+        } else {
+            showToast('Error: ' + r.error);
+        }
+    }
+
+    // Initial load
+    loadStatus();
+    // Auto-refresh status every 30s
+    setInterval(() => {
+        if (document.querySelector('#page-status.active')) loadStatus();
+    }, 30000);
+    
+    // Load datalist items
+    loadValidModels();
+
+    // ---------------------------------------------------------------------------
+    // Chat
+    // ---------------------------------------------------------------------------
+    let chatInitialized = false;
+
+    function initChat() {
+        if (chatInitialized) return;
+        chatInitialized = true;
+
+        const input = document.getElementById('chat-input');
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendChat();
+            }
+        });
+        input.focus();
+    }
+
+    function addChatMessage(role, text) {
+        const container = document.getElementById('chat-messages');
+        const msg = document.createElement('div');
+        msg.className = `chat-msg ${role}`;
+
+        if (role === 'agent') {
+            msg.innerHTML = `<div class="agent-name">🍡 Mochi</div>${escapeHtml(text)}`;
+        } else {
+            msg.textContent = text;
+        }
+
+        container.appendChild(msg);
+        container.scrollTop = container.scrollHeight;
+        return msg;
+    }
+
+    function addChatKeyboard(keyboard) {
+        if (!keyboard || keyboard.length === 0) return;
+        const container = document.getElementById('chat-messages');
+        const board = document.createElement('div');
+        board.className = 'chat-keyboard';
+        board.style.display = 'flex';
+        board.style.flexDirection = 'column';
+        board.style.gap = '4px';
+        board.style.marginTop = '4px';
+        board.style.marginBottom = '12px';
+
+        keyboard.forEach(row => {
+            const rowDiv = document.createElement('div');
+            rowDiv.style.display = 'flex';
+            rowDiv.style.gap = '4px';
+            row.forEach(btn => {
+                const b = document.createElement('button');
+                b.className = 'btn btn-sm btn-primary';
+                b.textContent = btn.text;
+                b.onclick = () => {
+                    const input = document.getElementById('chat-input');
+                    input.value = btn.callback_data;
+                    sendChat();
+                };
+                rowDiv.appendChild(b);
+            });
+            board.appendChild(rowDiv);
+        });
+        
+        container.appendChild(board);
+        container.scrollTop = container.scrollHeight;
+    }
+
+    function addTypingIndicator() {
+        const container = document.getElementById('chat-messages');
+        const indicator = document.createElement('div');
+        indicator.className = 'chat-msg agent';
+        indicator.id = 'typing-indicator';
+        indicator.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
+        container.appendChild(indicator);
+        container.scrollTop = container.scrollHeight;
+        return indicator;
+    }
+
+    function removeTypingIndicator() {
+        const el = document.getElementById('typing-indicator');
+        if (el) el.remove();
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    async function sendChat() {
+        const input = document.getElementById('chat-input');
+        const btn = document.getElementById('chat-send');
+        const text = input.value.trim();
+        if (!text) return;
+
+        // Add user message
+        addChatMessage('user', text);
+        input.value = '';
+        btn.disabled = true;
+
+        // Show typing
+        addTypingIndicator();
+
+        try {
+            const data = await api('POST', '/api/chat', { message: text });
+            removeTypingIndicator();
+
+            if (data.error) {
+                addChatMessage('system', `Error: ${data.error}`);
+            } else {
+                addChatMessage('agent', data.response);
+                if (data.keyboard) {
+                    addChatKeyboard(data.keyboard);
+                }
+            }
+        } catch (e) {
+            removeTypingIndicator();
+            addChatMessage('system', `Network Error: ${e.message}`);
+        }
+
+        btn.disabled = false;
+        input.focus();
+    }
+    // ---------------------------------------------------------------------------
+    // Mochi Office Animation
+    // ---------------------------------------------------------------------------
+    const AGENT_PERSONAS = {
+        manager:      { emoji: '👩‍💼', role: 'Front Desk', deskRole: 'front-desk', items: ['📋','☕'], bubbles: ['How can I help?', 'Routing your request…', 'Let me find someone!', 'Welcome to Mochi!'] },
+        admin:        { emoji: '👩‍💻', role: 'Boss',       deskRole: 'boss',       items: ['🖥️','📊'], bubbles: ['Systems nominal.', 'Deploying changes…', 'Config updated!', 'All agents green.'] },
+        nutritionist: { emoji: '🥗', role: 'Employee',   deskRole: 'employee',   items: ['🍎','📝'], bubbles: ['Tracking macros…', 'Healthy choice! 💪', 'Logging your meal!', 'Let me check…'] },
+        learner:      { emoji: '📚', role: 'Intern',     deskRole: 'learner',    items: ['✏️','💡'], bubbles: ['Learning new skills!', 'Researching…', 'Almost got it!', 'Packaging a tool…'] },
+    };
+
+    const DEFAULT_PERSONA = { emoji: '🤖', role: 'Employee', deskRole: 'employee', items: ['💻','📁'], bubbles: ['Working on it…', 'Processing…', 'Done!', 'Ready!'] };
+
+    function getPersona(name) {
+        return AGENT_PERSONAS[name] || DEFAULT_PERSONA;
+    }
+
+    function buildAgentDesk(agent) {
+        const p = getPersona(agent.name);
+        const bobDelay = (Math.random() * 2).toFixed(1);
+
+        return `
+            <div class="agent-desk" data-role="${p.deskRole}" data-agent="${agent.name}" style="animation-delay: ${bobDelay}s">
+                <div class="speech-bubble">${p.bubbles[0]}</div>
+                <div class="desk-character" style="animation-delay: ${bobDelay}s">
+                    ${p.emoji}
+                    <div class="status-dot"></div>
+                    <div class="typing-dots">
+                        <span></span><span></span><span></span>
+                    </div>
+                </div>
+                <div class="desk-surface">
+                    ${p.items.map(i => `<span class="desk-item">${i}</span>`).join('')}
+                </div>
+                <div class="desk-nametag">${agent.display_name}</div>
+                <div class="desk-role">${p.role}</div>
+            </div>
+        `;
+    }
+
+    async function renderOffice() {
+        const floor = document.getElementById('office-floor');
+        if (!floor) return;
+
+        try {
+            const agents = await api('GET', '/api/agents');
+            
+            // Sort: front-desk first, boss second, then employees
+            const roleOrder = { 'front-desk': 0, 'boss': 1, 'employee': 2, 'learner': 3 };
+            agents.sort((a, b) => {
+                const ra = roleOrder[getPersona(a.name).deskRole] ?? 2;
+                const rb = roleOrder[getPersona(b.name).deskRole] ?? 2;
+                return ra - rb;
+            });
+
+            // Canvas only — all agents drawn in pixel art
+            floor.innerHTML = `<canvas id="office-canvas" style="position:absolute;inset:0;width:100%;height:100%;z-index:0;image-rendering:pixelated;"></canvas>`;
+
+            // Store agents for pixel renderer
+            window._officeAgents = agents;
+
+            // Start clock
+            updateOfficeClock();
+            if (!window._clockInterval) {
+                window._clockInterval = setInterval(updateOfficeClock, 1000);
+            }
+
+        } catch (e) {
+            console.error('Office render error:', e);
+        }
+    }
+
+    function spawnParticles() {
+        const container = document.getElementById('office-particles');
+        if (!container) return;
+        container.innerHTML = '';
+
+        for (let i = 0; i < 12; i++) {
+            const p = document.createElement('div');
+            p.className = 'particle';
+            p.style.left = `${Math.random() * 100}%`;
+            p.style.bottom = `${Math.random() * 30}%`;
+            p.style.animationDuration = `${4 + Math.random() * 6}s`;
+            p.style.animationDelay = `${Math.random() * 8}s`;
+            container.appendChild(p);
+        }
+    }
+
+    function startActivityLoop(agents) {
+        // Randomly make agents "active" (typing) for short bursts
+        setInterval(() => {
+            const desks = document.querySelectorAll('.agent-desk');
+            desks.forEach(d => d.classList.remove('active'));
+
+            // Pick 1-2 random agents to be "active"
+            const count = Math.random() > 0.5 ? 2 : 1;
+            const shuffled = [...desks].sort(() => Math.random() - 0.5);
+            for (let i = 0; i < Math.min(count, shuffled.length); i++) {
+                shuffled[i].classList.add('active');
+
+                // Rotate speech bubble text
+                const agentName = shuffled[i].dataset.agent;
+                const p = getPersona(agentName);
+                const bubble = shuffled[i].querySelector('.speech-bubble');
+                if (bubble) {
+                    bubble.textContent = p.bubbles[Math.floor(Math.random() * p.bubbles.length)];
+                }
+            }
+        }, 3500);
+    }
+
+    function updateOfficeClock() {
+        const el = document.getElementById('office-clock');
+        if (!el) return;
+        const now = new Date();
+        const h = String(now.getHours()).padStart(2, '0');
+        const m = String(now.getMinutes()).padStart(2, '0');
+        const s = String(now.getSeconds()).padStart(2, '0');
+        el.textContent = `${h}:${m}:${s}`;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Pixel Art Office Background (Canvas)
+    // ---------------------------------------------------------------------------
+    let _pixelAnimId = null;
+
+    function initPixelOffice() {
+        const canvas = document.getElementById('office-canvas');
+        if (!canvas) return;
+        const floor = document.getElementById('office-floor');
+        if (!floor) return;
+
+        const PX = 4;
+        const W = Math.floor(floor.offsetWidth / PX);
+        const H = Math.floor(floor.offsetHeight / PX);
+        canvas.width = W;
+        canvas.height = H;
+        const ctx = canvas.getContext('2d');
+
+        const agents = window._officeAgents || [];
+
+        // --- Color palette ---
+        const C = {
+            wallDark: '#1a1832', wallMid: '#232044', wallLight: '#2c2854',
+            floorDark: '#1e1a38', floorLight: '#262242', floorLine: '#302a55',
+            windowFrame: '#3a3468', windowGlass: '#0c0a1e',
+            building: '#141428', windowLit: '#ffd866', windowOff: '#1a1835',
+            shelf: '#3d3060', shelfEdge: '#4a3870',
+            book1: '#e06070', book2: '#60a0e0', book3: '#70cc80', book4: '#d0a050', book5: '#b070d0',
+            plant: '#40a060', plantDark: '#2e7848', pot: '#8b6540', potDark: '#6b4d30',
+            cooler: '#d0d8e8', coolerDark: '#a0a8c0', coolerWater: '#60a0f0',
+            lampPost: '#4a4470', lampShade: '#ffd044',
+            clock: '#e8e0d0', clockHand: '#2a2040',
+            carpet: '#302060', carpetLight: '#382868',
+            starBright: '#ffffff', starDim: '#8888aa',
+            skin: '#f0c8a0', skinShadow: '#d8a878',
+            deskTop: '#6b5030', deskLeg: '#5a4028', deskFront: '#7d6038',
+            chairBack: '#484068', chairSeat: '#3a3458', chairLeg: '#2e2848',
+            monitor: '#222240', monitorScreen: '#3050a0', monitorScreenLit: '#4070d0',
+            statusGreen: '#40d880',
+        };
+
+        // Hair/shirt colors per agent role
+        const AGENT_COLORS = {
+            'front-desk': { hair: '#ff9a9e', hairDark: '#e07878', shirt: '#f0c0c8' },
+            'boss':       { hair: '#c090e0', hairDark: '#9060b0', shirt: '#b0a0d0' },
+            'employee':   { hair: '#70b8e8', hairDark: '#5090c0', shirt: '#90d0f0' },
+            'learner':    { hair: '#f0c050', hairDark: '#c89830', shirt: '#f0d888' },
+        };
+        const DEFAULT_COLORS = { hair: '#a0a0b0', hairDark: '#808090', shirt: '#c0c0d0' };
+
+        // Window lights for animation
+        const windowLights = [];
+        for (let i = 0; i < 40; i++) {
+            windowLights.push({ on: Math.random() > 0.3, timer: Math.floor(Math.random() * 200), period: 80 + Math.floor(Math.random() * 300) });
+        }
+
+        const stars = [];
+        for (let i = 0; i < 15; i++) {
+            stars.push({ x: Math.floor(Math.random() * W), y: 6 + Math.floor(Math.random() * 20), blink: Math.floor(Math.random() * 120), period: 60 + Math.floor(Math.random() * 120) });
+        }
+
+        // Agent activity state
+        const agentStates = agents.map(() => ({
+            active: false, bubbleTimer: 0, bobOffset: Math.random() * Math.PI * 2,
+        }));
+
+        let frame = 0;
+
+        function rect(x, y, w, h, color) {
+            ctx.fillStyle = color;
+            ctx.fillRect(Math.floor(x), Math.floor(y), Math.ceil(w), Math.ceil(h));
+        }
+
+        function drawText(text, tx, ty, color) {
+            ctx.fillStyle = color || '#e8e8f0';
+            ctx.font = '4px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText(text, tx, ty);
+        }
+
+        // --- Background elements (same as before) ---
+        function drawSky(x, y, w, h) {
+            for (let row = 0; row < h; row++) {
+                const t = row / h;
+                rect(x, y + row, w, 1, `rgb(${Math.floor(8+t*8)},${Math.floor(8+t*16)},${Math.floor(24+t*24)})`);
+            }
+        }
+
+        function drawBuilding(bx, by, bw, bh, winIdx) {
+            rect(bx, by, bw, bh, C.building);
+            const cols = Math.floor((bw - 2) / 3);
+            const rows = Math.floor((bh - 2) / 4);
+            let idx = winIdx;
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    const light = windowLights[idx % windowLights.length];
+                    rect(bx + 2 + c * 3, by + 2 + r * 4, 2, 2, light.on ? C.windowLit : C.windowOff);
+                    idx++;
+                }
+            }
+            return idx;
+        }
+
+        function drawCityscape(sx, sy, sw, sh) {
+            drawSky(sx, sy, sw, sh);
+            stars.forEach(s => {
+                if (s.x >= sx && s.x < sx + sw && s.y >= sy && s.y < sy + sh) {
+                    rect(s.x, s.y, 1, 1, ((frame + s.blink) % s.period) < (s.period * 0.6) ? C.starBright : C.starDim);
+                }
+            });
+            const gy = sy + sh;
+            let idx = 0;
+            idx = drawBuilding(sx+2, gy-18, 8, 18, idx);
+            idx = drawBuilding(sx+11, gy-24, 6, 24, idx);
+            idx = drawBuilding(sx+18, gy-14, 10, 14, idx);
+            idx = drawBuilding(sx+29, gy-20, 7, 20, idx);
+            if (sw > 45) drawBuilding(sx+37, gy-16, 8, 16, idx);
+        }
+
+        function drawWindow(wx, wy, ww, wh) {
+            rect(wx, wy, ww, wh, C.windowFrame);
+            rect(wx+1, wy+1, ww-2, wh-2, C.windowGlass);
+            drawCityscape(wx+1, wy+1, ww-2, wh-2);
+            rect(wx + Math.floor(ww/2), wy, 1, wh, C.windowFrame);
+            rect(wx, wy + Math.floor(wh/2), ww, 1, C.windowFrame);
+        }
+
+        function drawBookshelf(sx, sy) {
+            rect(sx, sy, 12, 1, C.shelfEdge);
+            rect(sx, sy+1, 12, 1, C.shelf);
+            [{x:1,w:2,h:5,c:C.book1},{x:3,w:1,h:6,c:C.book2},{x:5,w:2,h:4,c:C.book3},{x:7,w:1,h:5,c:C.book4},{x:9,w:2,h:6,c:C.book5}]
+                .forEach(b => rect(sx+b.x, sy-b.h, b.w, b.h, b.c));
+        }
+
+        function drawPlant(px, py) {
+            rect(px, py-3, 4, 3, C.pot); rect(px+1, py-4, 2, 1, C.potDark);
+            rect(px+1, py-6, 2, 2, C.plant); rect(px, py-7, 1, 2, C.plantDark);
+            rect(px+3, py-7, 1, 2, C.plantDark); rect(px+1, py-8, 2, 1, C.plant);
+            rect(px-1, py-6, 1, 1, C.plant); rect(px+4, py-5, 1, 1, C.plant);
+        }
+
+        function drawWaterCooler(cx, cy) {
+            rect(cx, cy-8, 4, 8, C.coolerDark); rect(cx+1, cy-10, 2, 2, C.cooler);
+            rect(cx, cy-14, 4, 4, C.coolerWater); rect(cx+1, cy-15, 2, 1, C.coolerWater);
+            rect(cx+1, cy-14, 1, 2, '#80c0ff');
+        }
+
+        function drawWallClock(cx, cy) {
+            rect(cx, cy, 5, 5, C.clock); rect(cx+1, cy-1, 3, 1, C.clock);
+            rect(cx+1, cy+5, 3, 1, C.clock); rect(cx-1, cy+1, 1, 3, C.clock);
+            rect(cx+5, cy+1, 1, 3, C.clock); rect(cx+2, cy+2, 1, 1, C.clockHand);
+            const sec = (frame % 120);
+            if (sec < 30) rect(cx+2, cy+1, 1, 1, C.clockHand);
+            else if (sec < 60) rect(cx+3, cy+2, 1, 1, C.clockHand);
+            else if (sec < 90) rect(cx+2, cy+3, 1, 1, C.clockHand);
+            else rect(cx+1, cy+2, 1, 1, C.clockHand);
+        }
+
+        function drawLamp(lx, ly) {
+            rect(lx+1, ly-8, 1, 8, C.lampPost);
+            rect(lx-1, ly-10, 5, 2, C.lampShade);
+        }
+
+        function drawFloor(fy) {
+            for (let y = fy; y < H; y++) {
+                for (let x = 0; x < W; x++) {
+                    rect(x, y, 1, 1, ((Math.floor(x/4) + Math.floor((y-fy)/3)) % 2 === 0) ? C.floorDark : C.floorLight);
+                }
+            }
+            rect(0, fy, W, 1, C.floorLine);
+        }
+
+        function drawCarpet(cx, cy, cw, ch) {
+            for (let y = 0; y < ch; y++)
+                for (let x = 0; x < cw; x++)
+                    rect(cx+x, cy+y, 1, 1, ((x+y)%2===0) ? C.carpet : C.carpetLight);
+            rect(cx, cy, cw, 1, '#402878'); rect(cx, cy+ch-1, cw, 1, '#402878');
+            rect(cx, cy, 1, ch, '#402878'); rect(cx+cw-1, cy, 1, ch, '#402878');
+        }
+
+        // --- Pixel art agent character (facing forward, sitting) ---
+        function drawAgent(ax, ay, colors, bobY, isActive) {
+            // ay = base of chair legs on floor
+            // bobY = small vertical offset for idle animation
+            const by = ay + bobY;
+
+            // Chair (behind character)
+            rect(ax-1, by-14, 10, 1, C.chairBack); // chair top rail
+            rect(ax-1, by-13, 1, 5, C.chairBack);   // left back
+            rect(ax+8, by-13, 1, 5, C.chairBack);   // right back
+            rect(ax, by-8, 8, 1, C.chairSeat);       // seat
+            rect(ax, by-7, 1, 7, C.chairLeg);        // left front leg
+            rect(ax+7, by-7, 1, 7, C.chairLeg);      // right front leg
+            rect(ax-1, by-8, 1, 8, C.chairLeg);      // left back leg
+            rect(ax+8, by-8, 1, 8, C.chairLeg);      // right back leg
+
+            // Desk (in front of character, overlaps lower body)
+            const deskY = by - 7;
+            rect(ax-3, deskY, 14, 2, C.deskTop);       // desktop surface
+            rect(ax-3, deskY+2, 14, 1, C.deskFront);   // front edge
+            rect(ax-2, deskY+3, 1, 5, C.deskLeg);      // left leg
+            rect(ax+9, deskY+3, 1, 5, C.deskLeg);      // right leg
+
+            // Monitor on desk
+            rect(ax+2, deskY-4, 4, 3, C.monitor);
+            rect(ax+3, deskY-3, 2, 1, isActive ? C.monitorScreenLit : C.monitorScreen);
+            rect(ax+3, deskY-1, 2, 1, C.monitor); // stand
+
+            // Person sitting (above seat)
+            // Body/torso
+            rect(ax+2, by-12, 4, 4, colors.shirt);
+
+            // Arms on desk
+            rect(ax+1, by-10, 1, 2, C.skin);   // left arm
+            rect(ax+6, by-10, 1, 2, C.skin);   // right arm
+
+            // Head
+            rect(ax+2, by-16, 4, 4, C.skin);
+            // Eyes
+            rect(ax+3, by-14, 1, 1, '#303050');
+            rect(ax+5, by-14, 1, 1, '#303050');
+            // Mouth (smile if active)
+            if (isActive) {
+                rect(ax+3, by-13, 2, 1, '#e08080');
+            }
+
+            // Hair
+            rect(ax+2, by-17, 4, 2, colors.hair);
+            rect(ax+1, by-16, 1, 2, colors.hairDark); // side hair left
+            rect(ax+6, by-16, 1, 2, colors.hairDark); // side hair right
+
+            // Status dot
+            rect(ax+7, by-17, 2, 2, C.statusGreen);
+
+            // Typing animation dots when active
+            if (isActive) {
+                const dotPhase = Math.floor(frame / 8) % 3;
+                rect(ax+2, deskY-1, 1, 1, dotPhase === 0 ? '#ffffff' : '#606080');
+                rect(ax+4, deskY-1, 1, 1, dotPhase === 1 ? '#ffffff' : '#606080');
+                rect(ax+6, deskY-1, 1, 1, dotPhase === 2 ? '#ffffff' : '#606080');
+            }
+        }
+
+        function drawSpeechBubble(bx, by, text) {
+            const textW = text.length * 2.5 + 4;
+            const bw = Math.max(textW, 12);
+            const bh = 6;
+            const sx = bx - Math.floor(bw/2);
+            const sy = by - bh;
+            // Bubble background
+            rect(sx, sy, bw, bh, '#e8e0f0');
+            rect(sx+1, sy-1, bw-2, 1, '#e8e0f0');
+            // Border
+            rect(sx, sy - 1, bw, 1, '#7c5cfc');
+            rect(sx, sy + bh, bw, 1, '#7c5cfc');
+            // Pointer
+            rect(bx, sy + bh + 1, 2, 1, '#e8e0f0');
+            // Text
+            drawText(text, bx + 1, sy + 4, '#2a2040');
+        }
+
+        // --- Main draw loop ---
+        function draw() {
+            ctx.clearRect(0, 0, W, H);
+
+            // Wall
+            rect(0, 0, W, H, C.wallDark);
+            rect(0, 0, W, H * 0.55, C.wallMid);
+            const wainY = Math.floor(H * 0.55);
+            rect(0, wainY, W, 2, C.wallLight);
+
+            // Floor
+            const floorY = Math.floor(H * 0.7);
+            drawFloor(floorY);
+
+            // Carpet
+            const carpetW = Math.floor(W * 0.5);
+            const carpetX = Math.floor((W - carpetW) / 2);
+            drawCarpet(carpetX, floorY + 2, carpetW, Math.floor(H * 0.2));
+
+            // Windows
+            const winW = Math.floor(W * 0.16);
+            const winH = Math.floor(H * 0.32);
+            const winY = Math.floor(H * 0.08);
+            const gap = Math.floor(W / 5);
+            for (let i = 1; i <= 4; i++) drawWindow(gap*i - Math.floor(winW/2), winY, winW, winH);
+
+            // Furniture
+            drawBookshelf(3, Math.floor(H * 0.42));
+            drawBookshelf(3, Math.floor(H * 0.52));
+            drawPlant(17, floorY);
+            drawPlant(W - 8, floorY);
+            drawWaterCooler(W - 18, floorY);
+            drawWallClock(Math.floor(W/2) - 2, Math.floor(H * 0.12));
+            drawLamp(Math.floor(W * 0.25), Math.floor(H * 0.02));
+            drawLamp(Math.floor(W * 0.75), Math.floor(H * 0.02));
+
+            // --- Draw agents ---
+            const agentCount = agents.length;
+            if (agentCount > 0) {
+                const spacing = Math.floor(W / (agentCount + 1));
+
+                agents.forEach((agent, i) => {
+                    const persona = getPersona(agent.name);
+                    const colors = AGENT_COLORS[persona.deskRole] || DEFAULT_COLORS;
+                    const state = agentStates[i];
+
+                    // Idle bob
+                    const bobY = Math.round(Math.sin(frame * 0.04 + state.bobOffset) * 0.8);
+
+                    const ax = spacing * (i + 1) - 4;
+                    const ay = floorY;
+
+                    drawAgent(ax, ay, colors, bobY, state.active);
+
+                    // Name label below desk
+                    drawText(agent.display_name, ax + 4, ay + 3, '#c0b8d8');
+
+                    // Speech bubble when active
+                    if (state.active && state.bubbleTimer > 0) {
+                        const bubbles = persona.bubbles;
+                        const bubbleText = bubbles[Math.floor(frame / 60) % bubbles.length];
+                        drawSpeechBubble(ax + 4, ay - 20 + bobY, bubbleText);
+                    }
+                });
+            }
+
+            // Animate window lights
+            windowLights.forEach(l => {
+                l.timer++;
+                if (l.timer >= l.period) { l.timer = 0; l.on = Math.random() > 0.25; }
+            });
+
+            // Randomly activate agents
+            if (frame % 90 === 0) {
+                agentStates.forEach(s => { s.active = false; s.bubbleTimer = 0; });
+                const count = Math.random() > 0.5 ? 2 : 1;
+                const indices = [...Array(agentStates.length).keys()].sort(() => Math.random() - 0.5);
+                for (let i = 0; i < Math.min(count, indices.length); i++) {
+                    agentStates[indices[i]].active = true;
+                    agentStates[indices[i]].bubbleTimer = 80;
+                }
+            }
+
+            agentStates.forEach(s => { if (s.bubbleTimer > 0) s.bubbleTimer--; });
+
+            frame++;
+            _pixelAnimId = requestAnimationFrame(draw);
+        }
+
+        if (_pixelAnimId) cancelAnimationFrame(_pixelAnimId);
+        draw();
+
+        window.addEventListener('resize', () => {
+            const newW = Math.floor(floor.offsetWidth / PX);
+            const newH = Math.floor(floor.offsetHeight / PX);
+            if (newW !== canvas.width || newH !== canvas.height) {
+                canvas.width = newW; canvas.height = newH;
+            }
+        });
+    }
+
+    </script>
+</body>
+</html>

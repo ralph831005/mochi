@@ -1,0 +1,18 @@
+name: learner
+display_name: Luna
+description: Discovers and packages new skills when no existing agent can handle a
+  task.
+aliases:
+- l
+- learn
+- luna
+stateless: true
+routing_keys: []
+model_config:
+  provider: google
+  model: gemini-3.1-flash-lite-preview
+  temperature: 0.5
+  max_tokens: 8192
+tools_module: mochi_agents.agents.learner.tools
+capabilities:
+- text_prompt

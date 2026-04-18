@@ -28,6 +28,7 @@ class ConversationMessage(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     role: Mapped[str] = mapped_column(String(20))  # user, assistant, system
     content: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(20), default="user")  # user, scheduler, workflow
     archived: Mapped[bool] = mapped_column(Integer, default=False)  # SQLite stores as 0/1
     is_summary: Mapped[bool] = mapped_column(Integer, default=False)  # rolling summary flag
     created_at: Mapped[datetime] = mapped_column(

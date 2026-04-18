@@ -1,6 +1,7 @@
 name: manager
-display_name: "Manager"
+display_name: "Mia"
 description: "Routes ambiguous tasks to the appropriate specialist agent."
+aliases: [m, mia]
 routing_keys: []
 model_config:
   provider: google

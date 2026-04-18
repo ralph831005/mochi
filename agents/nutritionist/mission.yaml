@@ -30,6 +30,9 @@ model_config:
 capabilities:
   - text_prompt
   - voice_transcript
+context_tools:
+  - tool: get_today_summary
+    label: "Today's Meal Log"
 schedules:
   - name: daily_summary
     cron: "0 21 * * *"

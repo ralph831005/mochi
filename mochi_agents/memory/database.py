@@ -42,10 +42,19 @@ async def get_session(agent_name: str, data_dir: Path) -> AsyncGenerator[AsyncSe
 async def init_db(agent_name: str, data_dir: Path) -> None:
     """Create all tables for the given agent's database."""
     from mochi_agents.memory.models import Base
+    from sqlalchemy import text
 
     engine = get_engine(agent_name, data_dir)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+        # Migration: add source column if missing (for existing databases)
+        result = await conn.execute(text("PRAGMA table_info(conversation_messages)"))
+        columns = [row[1] for row in result]
+        if "source" not in columns:
+            await conn.execute(
+                text("ALTER TABLE conversation_messages ADD COLUMN source VARCHAR(20) DEFAULT 'user'")
+            )
 
 
 async def close_all() -> None:

@@ -1,0 +1,23 @@
+name: admin
+display_name: Anna
+description: Creates and manages agents, tools, and system config via chat.
+aliases:
+- a
+- adm
+- anna
+routing_keys:
+- create
+- agent
+- config
+- deploy
+- setup
+- registry
+- edit
+model_config:
+  provider: google
+  model: gemini-3.1-flash-lite-preview
+  temperature: 0.2
+  max_tokens: 4096
+tools_module: mochi_agents.agents.admin.tools
+capabilities:
+- text_prompt

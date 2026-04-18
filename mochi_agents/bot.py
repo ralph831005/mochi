@@ -19,7 +19,13 @@ from mochi_agents.core.agent_runtime import AgentRuntime
 from mochi_agents.core.registry import Registry
 from mochi_agents.core.router import Router
 from mochi_agents.core.scheduler import Scheduler
-from mochi_agents.core.tool_runner import ImportlibToolRunner
+from mochi_agents.core.shortcut_runner import ShortcutRunner, init_alias_registry, set_shortcut_runner
+from mochi_agents.core.tool_runner import (
+    CompositeToolRunner,
+    ImportlibToolRunner,
+    MCPToolRunner,
+)
+from mochi_agents.core.workflow_engine import WorkflowEngine
 from mochi_agents.memory.database import close_all, init_db
 
 logger = logging.getLogger(__name__)
@@ -32,13 +38,23 @@ class MochiBot:
         self.client = client
         self.settings = settings
         self.registry = Registry()
-        self.tool_runner = ImportlibToolRunner()
+        self._importlib_runner = ImportlibToolRunner()
+        self._mcp_runner = MCPToolRunner()
+        self.tool_runner = CompositeToolRunner()
+        self.tool_runner.add_runner(self._importlib_runner)   # local tools first
+        self.tool_runner.add_runner(self._mcp_runner)         # then remote MCP
         self.runtime = AgentRuntime(tool_runner=self.tool_runner)
+        self.workflow_engine = WorkflowEngine(runtime=self.runtime, tool_runner=self.tool_runner)
+        self.shortcut_runner = ShortcutRunner(tool_runner=self.tool_runner, registry=self.registry)
         self.router = Router(
             registry=self.registry,
             runtime=self.runtime,
             tool_runner=self.tool_runner,
+            workflow_engine=self.workflow_engine,
+            shortcut_runner=self.shortcut_runner,
             on_reload=self._sync_commands,
+            send_fn=self.client.send,
+            cleanup_fn=self._cleanup,
         )
         self.scheduler = Scheduler(runtime=self.runtime, client=self.client)
         self._tasks: list[asyncio.Task] = []
@@ -64,11 +80,28 @@ class MochiBot:
         # Register tool modules from mission files
         self._register_tools()
 
+        # Connect to any registered MCP servers
+        await self._mcp_runner.connect_all()
+
         # Load cron jobs
         self.scheduler.load_cron_jobs()
 
+        # Load workflows
+        self.workflow_engine.load()
+
+        # Initialize alias registry and load shortcuts
+        init_alias_registry(data_dir)
+        set_shortcut_runner(self.shortcut_runner)
+        self.shortcut_runner.load_shortcuts()
+
         # Register slash commands with Telegram
         await self._sync_commands()
+
+        # Start dashboard web server
+        self._dashboard_runner = None
+        if self.settings.dashboard_enabled:
+            from mochi_agents.web.server import start_dashboard
+            self._dashboard_runner = await start_dashboard(self, port=self.settings.dashboard_port)
 
         # Log startup summary
         agents = self.registry.list_agents()
@@ -92,6 +125,11 @@ class MochiBot:
 
     async def _cleanup(self) -> None:
         """Close connections and clean up resources."""
+        if self._dashboard_runner:
+            await self._dashboard_runner.cleanup()
+        await self._mcp_runner.close()
+        if hasattr(self.client, 'ack'):
+            await self.client.ack()
         if hasattr(self.client, 'close'):
             await self.client.close()
         await close_all()
@@ -111,6 +149,8 @@ class MochiBot:
 
     async def _poll_loop(self) -> None:
         """Reactive loop: receive messages and route them."""
+        from mochi_agents.core.router import RouteResponse
+
         logger.info("Poll loop started")
 
         async for message in self.client.poll():
@@ -124,9 +164,20 @@ class MochiBot:
                 response = await self.router.route(
                     text=message.text,
                     user_id=message.user_id,
+                    chat_id=message.chat_id,
                 )
 
-                await self.client.send(message.chat_id, response)
+                # Send with keyboard if RouteResponse has buttons and client supports it
+                if (
+                    isinstance(response, RouteResponse)
+                    and response.keyboard
+                    and hasattr(self.client, "send_with_keyboard")
+                ):
+                    await self.client.send_with_keyboard(
+                        message.chat_id, response.text, response.keyboard
+                    )
+                else:
+                    await self.client.send(message.chat_id, str(response))
 
             except Exception as e:
                 logger.error(f"Error processing message: {e}", exc_info=True)
@@ -152,9 +203,20 @@ class MochiBot:
 
             tools_module = mission.get("tools_module")
             if tools_module:
-                self.tool_runner.register_agent(agent.name, tools_module)
-                tool_count = len(self.tool_runner.get_tool_declarations(agent.name))
-                logger.info(f"Agent '{agent.name}': {tool_count} tools from {tools_module}")
+                self._importlib_runner.register_agent(agent.name, tools_module)
+                tool_count = len(self._importlib_runner.get_tool_declarations(agent.name))
+                logger.info(f"Agent '{agent.name}': {tool_count} local tools from {tools_module}")
+
+            mcp_servers = mission.get("mcp_servers")
+            if mcp_servers and isinstance(mcp_servers, list):
+                normalized = []
+                for item in mcp_servers:
+                    if isinstance(item, str):
+                        normalized.append({"url": item})
+                    elif isinstance(item, dict):
+                        normalized.append(item)
+                self._mcp_runner.register_agent(agent.name, normalized)
+                logger.info(f"Agent '{agent.name}': {len(normalized)} MCP server(s) registered")
 
     def _setup_logging(self) -> None:
         """Configure logging."""

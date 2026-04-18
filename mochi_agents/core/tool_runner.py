@@ -165,3 +165,190 @@ class ImportlibToolRunner:
             if module_path and module_path in sys.modules:
                 del sys.modules[module_path]
             self._load_tools(name)
+
+
+class MCPToolRunner:
+    """ToolRunner that connects to external MCP servers via the official SDK.
+
+    Uses streamable-http transport to discover tools (list_tools) and
+    execute them (call_tool) on remote MCP server processes.
+    """
+
+    def __init__(self) -> None:
+        self._server_configs: dict[str, list[dict]] = {}   # agent_name → [{'url': url, 'tools': [...]}]
+        self._cache: dict[str, dict[str, ToolDeclaration]] = {}
+        self._sessions: dict[str, list[Any]] = {}      # agent_name → [session, ...]
+        self._contexts: dict[str, list[Any]] = {}       # keep refs for cleanup
+        self._connected: bool = False
+
+    def register_agent(self, agent_name: str, server_configs: list[dict]) -> None:
+        """Store MCP server configs for an agent. Call connect_all() after."""
+        self._server_configs[agent_name] = server_configs
+
+    async def connect_all(self) -> None:
+        """Open client sessions to all registered MCP servers and discover tools."""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        for agent_name, configs in self._server_configs.items():
+            declarations: dict[str, ToolDeclaration] = {}
+            sessions = []
+            contexts = []
+
+            for config in configs:
+                url = config.get("url")
+                if not url:
+                    continue
+                whitelist = config.get("tools")
+                try:
+                    session, ctx = await self._connect_one(url)
+                    sessions.append((session, url))
+                    contexts.append(ctx)
+
+                    # Discover tools
+                    tools_result = await session.list_tools()
+                    added_count = 0
+                    for tool in tools_result.tools:
+                        # Apply whitelist if present
+                        if whitelist is not None and tool.name not in whitelist:
+                            continue
+
+                        # Convert MCP tool schema → ToolDeclaration
+                        params = {}
+                        if tool.inputSchema and "properties" in tool.inputSchema:
+                            params = tool.inputSchema
+                        declarations[tool.name] = ToolDeclaration(
+                            name=tool.name,
+                            description=tool.description or "",
+                            parameters=params,
+                            function=None,  # remote — no local callable
+                        )
+                        added_count += 1
+
+                    logger.info(
+                        f"MCP: agent '{agent_name}' connected to {url} "
+                        f"— {added_count}/{len(tools_result.tools)} tools allowed"
+                    )
+                except Exception as e:
+                    logger.warning(f"MCP: failed to connect to {url} for '{agent_name}': {e}")
+
+            self._cache[agent_name] = declarations
+            self._sessions[agent_name] = sessions
+            self._contexts[agent_name] = contexts
+
+        self._connected = True
+
+    async def _connect_one(self, url: str) -> tuple[Any, Any]:
+        """Open a single MCP client session to a streamable-http server."""
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamablehttp_client
+
+        # streamablehttp_client is an async context manager that yields (read, write, _)
+        # We need to keep these alive, so we enter the contexts manually.
+        transport_ctx = streamablehttp_client(url)
+        read_stream, write_stream, _ = await transport_ctx.__aenter__()
+
+        session_ctx = ClientSession(read_stream, write_stream)
+        session = await session_ctx.__aenter__()
+        await session.initialize()
+
+        # Bundle contexts so we can clean up later
+        return session, (session_ctx, transport_ctx)
+
+    async def execute(self, agent_name: str, tool_name: str, args: dict) -> ToolResult:
+        """Execute a tool on the remote MCP server."""
+        if not self._connected:
+            return ToolResult(success=False, error="MCP sessions not connected yet")
+
+        # Find which session owns this tool
+        sessions = self._sessions.get(agent_name, [])
+        for session, url in sessions:
+            try:
+                result = await session.call_tool(tool_name, arguments=args)
+
+                # MCP call_tool returns a CallToolResult with content list
+                # Extract text content
+                text_parts = []
+                for content in result.content:
+                    if hasattr(content, "text"):
+                        text_parts.append(content.text)
+
+                data = "\n".join(text_parts) if text_parts else str(result.content)
+                return ToolResult(success=not result.isError, data=data)
+            except Exception:
+                # This session might not have this tool, try next
+                continue
+
+        return ToolResult(
+            success=False,
+            error=f"MCP tool '{tool_name}' not found for agent '{agent_name}'",
+        )
+
+    def get_tool_declarations(self, agent_name: str) -> list[ToolDeclaration]:
+        """Return discovered MCP tools for the agent."""
+        return list(self._cache.get(agent_name, {}).values())
+
+    def reload(self, agent_name: str | None = None) -> None:
+        """Reload is a no-op synchronously; use connect_all() for async reload."""
+        pass
+
+    async def close(self) -> None:
+        """Cleanly shut down all MCP client sessions."""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        for agent_name, ctx_list in self._contexts.items():
+            for session_ctx, transport_ctx in ctx_list:
+                try:
+                    await session_ctx.__aexit__(None, None, None)
+                    await transport_ctx.__aexit__(None, None, None)
+                except Exception as e:
+                    logger.warning(f"MCP: error closing session for '{agent_name}': {e}")
+
+        self._sessions.clear()
+        self._contexts.clear()
+        self._cache.clear()
+        self._connected = False
+
+
+class CompositeToolRunner:
+    """Aggregates multiple ToolRunner instances behind the ToolRunner interface.
+
+    The AgentRuntime sees a single ToolRunner. Internally, this delegates to
+    ImportlibToolRunner (local tools) and MCPToolRunner (remote MCP tools).
+    First runner that owns the tool wins.
+    """
+
+    def __init__(self) -> None:
+        self._runners: list = []
+
+    def add_runner(self, runner: Any) -> None:
+        """Add a ToolRunner backend."""
+        self._runners.append(runner)
+
+    async def execute(self, agent_name: str, tool_name: str, args: dict) -> ToolResult:
+        """Execute a tool, delegating to whichever runner owns it."""
+        for runner in self._runners:
+            decls = runner.get_tool_declarations(agent_name)
+            if any(d.name == tool_name for d in decls):
+                return await runner.execute(agent_name, tool_name, args)
+        return ToolResult(
+            success=False,
+            error=f"Tool '{tool_name}' not found in any runner for '{agent_name}'.",
+        )
+
+    def get_tool_declarations(self, agent_name: str) -> list[ToolDeclaration]:
+        """Merge declarations from all runners (first occurrence wins)."""
+        merged: list[ToolDeclaration] = []
+        seen: set[str] = set()
+        for runner in self._runners:
+            for d in runner.get_tool_declarations(agent_name):
+                if d.name not in seen:
+                    seen.add(d.name)
+                    merged.append(d)
+        return merged
+
+    def reload(self, agent_name: str | None = None) -> None:
+        """Delegate reload to all runners."""
+        for runner in self._runners:
+            runner.reload(agent_name)

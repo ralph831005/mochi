@@ -95,11 +95,14 @@ class Scheduler:
                 self._last_cron_check[key] = now
 
                 try:
+                    user_id = self._resolve_target_user_id(job["target_user_ids"])
                     response = await self.runtime.execute(
                         job["agent_name"],
                         f"[SCHEDULED] Execute action: {job['action']}",
+                        user_id=user_id,
+                        source="scheduler",
                     )
-                    await self._send_to_targets(job["target_user_ids"], response)
+                    await self._send_to_targets(job["target_user_ids"], f"📋 {response}")
                 except Exception as e:
                     logger.error(f"Cron job failed: {job['name']}: {e}", exc_info=True)
 
@@ -143,8 +146,10 @@ class Scheduler:
                     response = await self.runtime.execute(
                         agent_name,
                         f"[SCHEDULED REMINDER] {job.action}: {payload_text}",
+                        user_id=str(job.target_user_id),
+                        source="scheduler",
                     )
-                    await self.client.send(job.target_user_id, response)
+                    await self.client.send(job.target_user_id, f"🔔 {response}")
 
                     job.status = "completed"
                 except Exception as e:
@@ -186,3 +191,12 @@ class Scheduler:
     def reload(self) -> None:
         """Reload cron job definitions from mission files."""
         self.load_cron_jobs()
+
+    def _resolve_target_user_id(self, target_user_ids: Any) -> str:
+        """Extract a single user_id from target specification for context tools."""
+        if isinstance(target_user_ids, list) and target_user_ids:
+            return str(target_user_ids[0])
+        if target_user_ids == "all":
+            settings = get_settings()
+            return str(settings.allowed_user_ids[0]) if settings.allowed_user_ids else ""
+        return str(target_user_ids) if target_user_ids else ""

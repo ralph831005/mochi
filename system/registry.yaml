@@ -2,7 +2,7 @@
 
 agents:
   - name: manager
-    display_name: "Manager"
+    display_name: "Mia"
     description: "Routes ambiguous tasks to the appropriate specialist agent."
     routing_keys: []
     status: active
@@ -29,4 +29,23 @@ agents:
       - vitamin
       - water
       - drink
+    status: active
+
+  - name: admin
+    display_name: "Anna"
+    description: "Creates and manages agents, tools, and system config via chat."
+    routing_keys:
+      - create
+      - agent
+      - config
+      - deploy
+      - setup
+      - registry
+      - edit
+    status: active
+
+  - name: learner
+    display_name: "Luna"
+    description: "Discovers and packages new skills when no existing agent can handle a task."
+    routing_keys: []
     status: active

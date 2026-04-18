@@ -1,8 +1,12 @@
 """CLI entry point for the `mochi-agents` command.
 
 Usage:
-    mochi-agents          Start the bot
-    mochi-agents setup    Interactive token & config setup
+    mochi-agents                Start the bot + dashboard
+    mochi-agents setup          Interactive first-time setup wizard
+    mochi-agents config show    Show current config
+    mochi-agents config set K V Set a config value
+    mochi-agents agent list     List registered agents
+    mochi-agents agent info X   Show agent details
 """
 
 from __future__ import annotations
@@ -17,96 +21,387 @@ import yaml
 
 def main() -> None:
     """Entry point registered in pyproject.toml [project.scripts]."""
-    if len(sys.argv) > 1 and sys.argv[1] == "setup":
-        run_setup()
-    else:
+    if len(sys.argv) < 2:
         run_bot()
+        return
+
+    command = sys.argv[1]
+
+    if command == "setup":
+        run_setup()
+    elif command == "config":
+        run_config()
+    elif command == "agent":
+        run_agent()
+    elif command in ("--help", "-h"):
+        print_help()
+    else:
+        print(f"Unknown command: {command}")
+        print_help()
+        sys.exit(1)
+
+
+def print_help() -> None:
+    """Print CLI usage."""
+    print("""🍡 Mochi — Multi-Agent Service Bot
+
+Usage:
+  mochi-agents                  Start the bot + dashboard
+  mochi-agents setup            Interactive first-time setup
+  mochi-agents config show      Show current configuration
+  mochi-agents config set K V   Set a configuration value
+  mochi-agents agent list       List all registered agents
+  mochi-agents agent info NAME  Show agent details
+  mochi-agents --help           Show this help
+""")
 
 
 # ---------------------------------------------------------------------------
-# Setup
+# Setup Wizard
 # ---------------------------------------------------------------------------
 
 def run_setup() -> None:
-    """Interactive setup: prompt for API keys, validate, write secret.yaml."""
-    print("🍡 Mochi — Setup\n")
+    """Enhanced interactive setup wizard with step-by-step flow."""
+    print()
+    print("🍡 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("    Mochi — First-Time Setup")
+    print("   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print()
 
     project_root = _find_project_root()
     secret_path = project_root / "secret.yaml"
     config_path = project_root / "config.yaml"
 
-    # Collect secrets
-    gemini_key = getpass.getpass("Gemini API Key: ").strip()
-    telegram_token = getpass.getpass("Telegram Bot Token: ").strip()
+    # Step 1: API Keys
+    print("  Step 1/4: API Keys")
+    print("  " + "─" * 36)
+    print("  You can add multiple keys for per-agent cost tracking.")
+    print("  The first key will be named 'default'.")
+    print()
 
-    if not gemini_key or not telegram_token:
-        print("❌ Both keys are required.")
+    api_keys = {}
+    gemini_key = getpass.getpass("  Gemini API Key (default): ").strip()
+    if not gemini_key:
+        print("  ❌ At least one API key is required.")
+        sys.exit(1)
+    api_keys["default"] = gemini_key
+    print("  ✅ default key set")
+
+    while True:
+        more = input("  Add another key? (name or Enter to skip): ").strip()
+        if not more:
+            break
+        key_val = getpass.getpass(f"  API Key for '{more}': ").strip()
+        if key_val:
+            api_keys[more] = key_val
+            print(f"  ✅ {more} key set")
+
+    print(f"  📦 {len(api_keys)} key(s) configured: {', '.join(api_keys.keys())}")
+    print()
+
+    # Step 2: Telegram Bot
+    print("  Step 2/4: Telegram Bot")
+    print("  " + "─" * 36)
+
+    telegram_token = getpass.getpass("  Telegram Bot Token: ").strip()
+    if not telegram_token:
+        print("  ❌ Telegram token is required.")
         sys.exit(1)
 
-    # Validate Telegram token
-    print("\n🔍 Validating Telegram token...")
+    print("  🔍 Validating...")
     bot_info = _validate_telegram_token(telegram_token)
     if bot_info is None:
-        print("❌ Invalid Telegram bot token.")
+        print("  ❌ Invalid Telegram bot token.")
         sys.exit(1)
 
     bot_username = bot_info.get("username", "unknown")
-    print(f"✅ Telegram bot: @{bot_username}")
+    print(f"  ✅ Connected as @{bot_username}")
+    print()
 
-    # Write secret.yaml
+    # Step 3: User ID
+    print("  Step 3/4: Your Telegram User ID")
+    print("  " + "─" * 36)
+    print("  Tip: Message @userinfobot on Telegram to get your ID")
+
+    user_id_input = input("  User ID: ").strip()
+    allowed_ids = []
+    if user_id_input:
+        try:
+            for uid in user_id_input.split(","):
+                allowed_ids.append(int(uid.strip()))
+            print(f"  ✅ Allowlist: {allowed_ids}")
+        except ValueError:
+            print("  ⚠️  Invalid ID, skipping. Add later in config.yaml")
+    else:
+        print("  ⚠️  No ID provided. Add later in config.yaml")
+    print()
+
+    # Step 4: Verify agents
+    print("  Step 4/4: Default Agents")
+    print("  " + "─" * 36)
+
+    agents_dir = project_root / "agents"
+    if agents_dir.exists():
+        for agent_dir in sorted(agents_dir.iterdir()):
+            mission_path = agent_dir / "mission.yaml"
+            if mission_path.exists():
+                with open(mission_path) as f:
+                    mission = yaml.safe_load(f) or {}
+                name = mission.get("display_name", agent_dir.name)
+                desc = mission.get("description", "")[:60]
+                print(f"  ✅ {name} — {desc}")
+    else:
+        print("  ⚠️  No agents directory found at ./agents/")
+    print()
+
+    # Write files
     secrets = {
-        "gemini_api_key": gemini_key,
+        "gemini_api_key": api_keys.get("default", gemini_key),  # backward compat
         "telegram_bot_token": telegram_token,
+        "api_keys": api_keys,
     }
     with open(secret_path, "w") as f:
         yaml.dump(secrets, f, default_flow_style=False)
 
-    # Set restrictive permissions (Unix only)
     try:
         secret_path.chmod(0o600)
     except OSError:
-        pass  # Windows doesn't support Unix permissions
+        pass
 
-    print(f"🔒 Secrets written to {secret_path}")
+    print(f"  🔒 Secrets → {secret_path}")
 
-    # Generate default config.yaml if missing
-    if not config_path.exists():
-        default_config = {
-            "active_client": "telegram",
-            "allowed_user_ids": [],
-            "data_dir": "./data",
-            "agents_dir": "./agents",
-            "system_dir": "./system",
-        }
-        with open(config_path, "w") as f:
-            yaml.dump(default_config, f, default_flow_style=False)
-        print(f"📄 Default config written to {config_path}")
+    # Write config.yaml
+    config = {
+        "active_client": "telegram",
+        "allowed_user_ids": allowed_ids,
+        "data_dir": "./data",
+        "agents_dir": "./agents",
+        "system_dir": "./system",
+        "dashboard_port": 8080,
+        "dashboard_enabled": True,
+    }
 
-    print(
-        f"\n✅ Setup complete! Add your Telegram user ID to config.yaml "
-        f"(allowed_user_ids), then run: mochi-agents"
-    )
+    if config_path.exists():
+        with open(config_path) as f:
+            existing = yaml.safe_load(f) or {}
+        # Preserve existing values, only update allowed_user_ids if newly set
+        if allowed_ids:
+            existing["allowed_user_ids"] = allowed_ids
+        # Add new fields that might be missing
+        for k, v in config.items():
+            if k not in existing:
+                existing[k] = v
+        config = existing
 
+    with open(config_path, "w") as f:
+        yaml.dump(config, f, default_flow_style=False)
 
-def _validate_telegram_token(token: str) -> dict | None:
-    """Call Telegram getMe to validate the token. Returns bot info dict or None."""
-    import httpx
-
-    try:
-        resp = httpx.get(
-            f"https://api.telegram.org/bot{token}/getMe",
-            timeout=10,
-        )
-        data = resp.json()
-        if data.get("ok"):
-            return data.get("result", {})
-        return None
-    except Exception:
-        return None
+    print(f"  📄 Config → {config_path}")
+    print()
+    print("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("  🍡 Setup complete!")
+    print()
+    print(f"  Start:     mochi-agents")
+    print(f"  Dashboard: http://127.0.0.1:{config.get('dashboard_port', 8080)}")
+    print()
 
 
 # ---------------------------------------------------------------------------
-# Bot runner
+# Config Commands
+# ---------------------------------------------------------------------------
+
+def run_config() -> None:
+    """Handle `mochi-agents config` subcommands."""
+    if len(sys.argv) < 3:
+        print("Usage: mochi-agents config <show|set>")
+        sys.exit(1)
+
+    sub = sys.argv[2]
+    if sub == "show":
+        _config_show()
+    elif sub == "set":
+        _config_set()
+    elif sub == "set-key":
+        _config_set_key()
+    elif sub == "del-key":
+        _config_del_key()
+    else:
+        print(f"Unknown config command: {sub}")
+        sys.exit(1)
+
+
+def _config_show() -> None:
+    """Show current configuration."""
+    project_root = _find_project_root()
+
+    config = _load_yaml(project_root / "config.yaml")
+    secret = _load_yaml(project_root / "secret.yaml")
+
+    print("🍡 Mochi — Configuration\n")
+
+    print("  config.yaml:")
+    for key, val in config.items():
+        print(f"    {key}: {val}")
+
+    print()
+    print("  secret.yaml:")
+    for key, val in secret.items():
+        if key == "api_keys" and isinstance(val, dict):
+            print("    api_keys:")
+            for k, v in val.items():
+                masked = "***" + str(v)[-4:] if len(str(v)) > 4 else "***"
+                print(f"      {k}: {masked}")
+        else:
+            masked = "***" + str(val)[-4:] if len(str(val)) > 4 else "***"
+            print(f"    {key}: {masked}")
+
+    print()
+    print(f"  Project root: {project_root}")
+
+
+def _config_set() -> None:
+    """Set a config value."""
+    if len(sys.argv) < 5:
+        print("Usage: mochi-agents config set <key> <value>")
+        print("Example: mochi-agents config set dashboard_port 9090")
+        sys.exit(1)
+
+    key = sys.argv[3]
+    raw_value = sys.argv[4]
+
+    project_root = _find_project_root()
+    config_path = project_root / "config.yaml"
+
+    config = _load_yaml(config_path)
+
+    # Type coercion
+    if raw_value.lower() in ("true", "false"):
+        value = raw_value.lower() == "true"
+    elif raw_value.isdigit():
+        value = int(raw_value)
+    elif "," in raw_value:
+        # Support comma-separated lists (e.g., allowed_user_ids)
+        try:
+            value = [int(x.strip()) for x in raw_value.split(",")]
+        except ValueError:
+            value = [x.strip() for x in raw_value.split(",")]
+    else:
+        value = raw_value
+
+    config[key] = value
+
+    with open(config_path, "w") as f:
+        yaml.dump(config, f, default_flow_style=False)
+
+    print(f"  ✅ Config updated: {key} = {raw_value}")
+
+
+def _config_set_key() -> None:
+    """Set an API key dynamically."""
+    if len(sys.argv) < 5:
+        print("Usage: mochi-agents config set-key <name> <value>")
+        sys.exit(1)
+
+    name = sys.argv[3]
+    key_val = sys.argv[4]
+
+    from mochi_agents.config import set_api_key
+    set_api_key(name, key_val)
+    print(f"✅ API key '{name}' updated successfully in secret.yaml")
+
+
+def _config_del_key() -> None:
+    """Delete an API key dynamically."""
+    if len(sys.argv) < 4:
+        print("Usage: mochi-agents config del-key <name>")
+        sys.exit(1)
+
+    name = sys.argv[3]
+
+    from mochi_agents.config import remove_api_key
+    removed = remove_api_key(name)
+    if removed:
+        print(f"✅ API key '{name}' removed successfully from secret.yaml")
+    else:
+        print(f"❌ API key '{name}' not found")
+        sys.exit(1)
+
+# ---------------------------------------------------------------------------
+# Agent Commands
+# ---------------------------------------------------------------------------
+
+def run_agent() -> None:
+    """Handle `mochi-agents agent` subcommands."""
+    if len(sys.argv) < 3:
+        print("Usage: mochi-agents agent <list|info>")
+        sys.exit(1)
+
+    sub = sys.argv[2]
+    if sub == "list":
+        _agent_list()
+    elif sub == "info":
+        _agent_info()
+    else:
+        print(f"Unknown agent command: {sub}")
+        sys.exit(1)
+
+
+def _agent_list() -> None:
+    """List all registered agents."""
+    project_root = _find_project_root()
+    agents_dir = project_root / "agents"
+
+    print("🍡 Mochi — Agents\n")
+
+    if not agents_dir.exists():
+        print("  No agents directory found.")
+        return
+
+    for agent_dir in sorted(agents_dir.iterdir()):
+        mission_path = agent_dir / "mission.yaml"
+        if not mission_path.exists():
+            continue
+
+        with open(mission_path) as f:
+            mission = yaml.safe_load(f) or {}
+
+        name = agent_dir.name
+        display = mission.get("display_name", name)
+        desc = mission.get("description", "—")[:60]
+        model = mission.get("model_config", {}).get("model", "—")
+        shortcuts = len(mission.get("shortcuts", []))
+        schedules = len(mission.get("schedules", []))
+
+        print(f"  {display} ({name})")
+        print(f"    Model: {model}")
+        print(f"    {desc}")
+        print(f"    Shortcuts: {shortcuts} | Schedules: {schedules}")
+        print()
+
+
+def _agent_info() -> None:
+    """Show detailed info for a specific agent."""
+    if len(sys.argv) < 4:
+        print("Usage: mochi-agents agent info <name>")
+        sys.exit(1)
+
+    name = sys.argv[3]
+    project_root = _find_project_root()
+    mission_path = project_root / "agents" / name / "mission.yaml"
+
+    if not mission_path.exists():
+        print(f"  ❌ Agent '{name}' not found at {mission_path}")
+        sys.exit(1)
+
+    with open(mission_path) as f:
+        mission = yaml.safe_load(f) or {}
+
+    print(f"🍡 Agent: {mission.get('display_name', name)}\n")
+    print(yaml.dump(mission, default_flow_style=False, sort_keys=False))
+
+
+# ---------------------------------------------------------------------------
+# Bot Runner
 # ---------------------------------------------------------------------------
 
 def run_bot() -> None:
@@ -156,3 +451,28 @@ def _find_project_root() -> Path:
         if (parent / "config.yaml").exists():
             return parent
     return current
+
+
+def _load_yaml(path: Path) -> dict:
+    """Load a YAML file; return empty dict if missing."""
+    if not path.exists():
+        return {}
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
+
+
+def _validate_telegram_token(token: str) -> dict | None:
+    """Call Telegram getMe to validate the token. Returns bot info dict or None."""
+    import httpx
+
+    try:
+        resp = httpx.get(
+            f"https://api.telegram.org/bot{token}/getMe",
+            timeout=10,
+        )
+        data = resp.json()
+        if data.get("ok"):
+            return data.get("result", {})
+        return None
+    except Exception:
+        return None

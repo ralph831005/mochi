@@ -1,0 +1,39 @@
+smoothie:
+  command: smoothie
+  description: Log your daily protein smoothie ingredients.
+  fields:
+  - name: protein_powder_g
+    label: protein powder (g)
+    type: number
+    default: 33
+  - name: spinach_g
+    label: baby spinach (g)
+    type: number
+    default: 80
+  - name: chia_seeds_g
+    label: chia seeds (g)
+    type: number
+    default: 10
+  - name: milk_ml
+    label: milk (ml)
+    type: number
+    default: 200
+  - name: strawberry_g
+    label: strawberry (g)
+    type: number
+    default: 80
+  - name: blueberry_g
+    label: blueberry (g)
+    type: number
+    default: 80
+  - name: banana_g
+    label: banana (g)
+    type: number
+    default: 0
+  on_complete:
+    tool: log_meal
+    args:
+      meal_type: breakfast
+      description: 'Protein smoothie: ${protein_powder_g}g protein powder, ${spinach_g}g
+        spinach, ${chia_seeds_g}g chia seeds, ${milk_ml}ml milk, ${strawberry_g}g
+        strawberry, ${blueberry_g}g blueberry, ${banana_g}g banana'
