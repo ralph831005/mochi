@@ -10,6 +10,7 @@ import logging
 import signal
 import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -149,16 +150,41 @@ class MochiBot:
 
     async def _poll_loop(self) -> None:
         """Reactive loop: receive messages and route them."""
+        from mochi_agents.core.location import get_tracker
         from mochi_agents.core.router import RouteResponse
 
         logger.info("Poll loop started")
+        tracker = get_tracker()
 
         async for message in self.client.poll():
-
-            if not message.text:
-                continue
-
             try:
+                # --- Location update (live location shares) ---
+                if message.location:
+                    lat = message.location["latitude"]
+                    lon = message.location["longitude"]
+                    logger.info(
+                        f"Location update: [{message.user_id}] "
+                        f"({lat:.5f}, {lon:.5f})"
+                    )
+
+                    events = await tracker.update_position(
+                        message.user_id, lat, lon,
+                    )
+
+                    # Fire proactive reminders for any geofence transitions
+                    for event in events:
+                        await self._handle_geofence_event(
+                            event, message.user_id, message.chat_id,
+                        )
+
+                    # If message also has text, route it normally (unusual)
+                    if not message.text:
+                        continue
+
+                # --- Text messages ---
+                if not message.text:
+                    continue
+
                 logger.info(f"Received: [{message.user_id}] {message.text[:100]}")
 
                 response = await self.router.route(
@@ -188,6 +214,59 @@ class MochiBot:
                     )
                 except Exception:
                     pass
+
+
+    async def _handle_geofence_event(
+        self,
+        event: Any,
+        user_id: str,
+        chat_id: str,
+    ) -> None:
+        """Handle a geofence enter/exit event — send proactive reminders."""
+        from mochi_agents.core.location import get_tracker
+
+        tracker = get_tracker()
+
+        # Fetch and fire matching one-shot reminders
+        reminders = await tracker.get_triggered_reminders(
+            user_id, event.zone_name, event.event,
+        )
+
+        if not reminders:
+            # No active reminders for this transition — log and skip
+            logger.info(
+                f"Geofence {event.event} '{event.zone_name}' for user {user_id} — no active reminders"
+            )
+            return
+
+        # Build a proactive message via the secretary agent
+        reminder_texts = "\n".join(f"- {r['message']}" for r in reminders)
+        prompt = (
+            f"[LOCATION EVENT] The user just **{event.event}ed** the zone "
+            f"**{event.zone_name}**.\n\n"
+            f"Active reminders that just fired:\n{reminder_texts}\n\n"
+            f"Deliver these reminders in a brief, friendly message. "
+            f"Don't add extra commentary — just relay the reminders clearly."
+        )
+
+        try:
+            response = await self.runtime.execute(
+                "secretary",
+                prompt,
+                user_id=user_id,
+                source="location",
+            )
+            emoji = "📍" if event.event == "enter" else "🚶"
+            await self.client.send(chat_id, f"{emoji} {response}")
+        except Exception as e:
+            logger.error(f"Failed to deliver geofence reminder: {e}", exc_info=True)
+            # Fall back to raw reminder text
+            emoji = "📍" if event.event == "enter" else "🚶"
+            fallback = f"{emoji} **{event.event.title()}ing {event.zone_name}**\n{reminder_texts}"
+            try:
+                await self.client.send(chat_id, fallback)
+            except Exception:
+                pass
 
     def _register_tools(self) -> None:
         """Scan mission files and register tool modules with the ToolRunner."""

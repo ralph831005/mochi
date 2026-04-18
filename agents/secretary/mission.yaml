@@ -1,0 +1,33 @@
+name: secretary
+display_name: "Sora"
+description: "Location-aware secretary. Manages geofence zones and sends reminders when you arrive/leave places."
+aliases: [s, sec, sora]
+routing_keys:
+  - location
+  - remind
+  - reminder
+  - geofence
+  - zone
+  - arrive
+  - leave
+  - place
+  - home
+  - office
+  - costco
+  - store
+  - errand
+  - where
+  - position
+tools_module: mochi_agents.agents.secretary.tools
+model_config:
+  provider: google
+  model: gemini-3.1-flash-lite-preview
+  temperature: 0.3
+  max_tokens: 2048
+capabilities:
+  - text_prompt
+context_tools:
+  - tool: list_zones
+    label: "My Zones"
+  - tool: list_reminders
+    label: "Active Reminders"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, AsyncIterator
 
@@ -74,19 +75,12 @@ class TelegramClient:
         # Handle regular messages
         msg = update.get("message")
         if msg:
-            user = msg.get("from", {})
-            user_id = str(user.get("id", ""))
-            chat_id = str(msg.get("chat", {}).get("id", ""))
-            text = msg.get("text", "")
+            return self._parse_message(msg)
 
-            if not user_id or not chat_id:
-                return None
-
-            return IncomingMessage(
-                user_id=user_id,
-                chat_id=chat_id,
-                text=text,
-            )
+        # Handle edited messages (live location updates come through here)
+        edited = update.get("edited_message")
+        if edited:
+            return self._parse_message(edited)
 
         # Handle callback queries (inline keyboard button presses)
         callback = update.get("callback_query")
@@ -103,7 +97,6 @@ class TelegramClient:
 
             # Answer the callback to dismiss the loading spinner
             # (fire-and-forget, don't block the poll loop)
-            import asyncio
             asyncio.create_task(self._answer_callback(callback_id))
 
             return IncomingMessage(
@@ -114,6 +107,41 @@ class TelegramClient:
             )
 
         return None
+
+    def _parse_message(self, msg: dict) -> IncomingMessage | None:
+        """Parse a Telegram message dict into an IncomingMessage.
+
+        Handles both text messages and location shares (including live
+        location updates that arrive via edited_message).
+        """
+        user = msg.get("from", {})
+        user_id = str(user.get("id", ""))
+        chat_id = str(msg.get("chat", {}).get("id", ""))
+
+        if not user_id or not chat_id:
+            return None
+
+        text = msg.get("text", "")
+        location = None
+
+        # Parse location data if present
+        loc = msg.get("location")
+        if loc:
+            location = {
+                "latitude": loc["latitude"],
+                "longitude": loc["longitude"],
+                "live_period": loc.get("live_period"),
+            }
+            # Location messages have no text — don't default to empty string
+            if not text:
+                text = None
+
+        return IncomingMessage(
+            user_id=user_id,
+            chat_id=chat_id,
+            text=text if text else None,
+            location=location,
+        )
 
     def _check_allowlist(self, user_id: str) -> bool:
         """Check if a user is allowed. Empty allowlist = allow all."""

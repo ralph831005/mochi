@@ -17,6 +17,7 @@ class IncomingMessage:
     user_id: str
     chat_id: str
     text: str | None = None
+    location: dict | None = None  # {"latitude": float, "longitude": float, "live_period": int|None}
     attachments: list[Any] = field(default_factory=list)
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     source: str = "user"  # "user", "scheduler", "internal"

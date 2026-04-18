@@ -49,3 +49,24 @@ agents:
     description: "Discovers and packages new skills when no existing agent can handle a task."
     routing_keys: []
     status: active
+
+  - name: secretary
+    display_name: "Sora"
+    description: "Location-aware secretary. Manages geofence zones and sends reminders when you arrive/leave places."
+    routing_keys:
+      - location
+      - remind
+      - reminder
+      - geofence
+      - zone
+      - arrive
+      - leave
+      - place
+      - home
+      - office
+      - costco
+      - store
+      - errand
+      - where
+      - position
+    status: active
