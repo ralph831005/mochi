@@ -7,6 +7,8 @@ Usage:
     mochi-agents config set K V Set a config value
     mochi-agents agent list     List registered agents
     mochi-agents agent info X   Show agent details
+    mochi-agents reset          Reset conversation history (keeps data)
+    mochi-agents reset --all    Full factory reset (deletes everything)
 """
 
 from __future__ import annotations
@@ -33,6 +35,8 @@ def main() -> None:
         run_config()
     elif command == "agent":
         run_agent()
+    elif command == "reset":
+        run_reset()
     elif command in ("--help", "-h"):
         print_help()
     else:
@@ -52,6 +56,8 @@ Usage:
   mochi-agents config set K V   Set a configuration value
   mochi-agents agent list       List all registered agents
   mochi-agents agent info NAME  Show agent details
+  mochi-agents reset            Reset conversation history (keeps data)
+  mochi-agents reset --all      Full factory reset (deletes all data)
   mochi-agents --help           Show this help
 """)
 
@@ -398,6 +404,148 @@ def _agent_info() -> None:
 
     print(f"🍡 Agent: {mission.get('display_name', name)}\n")
     print(yaml.dump(mission, default_flow_style=False, sort_keys=False))
+
+
+# ---------------------------------------------------------------------------
+# Reset Command
+# ---------------------------------------------------------------------------
+
+def run_reset() -> None:
+    """Reset agent data with interactive confirmation.
+
+    Modes:
+        mochi-agents reset          Clear conversation history only
+        mochi-agents reset --all    Delete all data (full factory reset)
+    """
+    import sqlite3
+
+    full_reset = "--all" in sys.argv
+    project_root = _find_project_root()
+    config = _load_yaml(project_root / "config.yaml")
+    data_dir = project_root / Path(config.get("data_dir", "./data"))
+
+    if not data_dir.exists():
+        print("  No data directory found. Nothing to reset.")
+        return
+
+    # Discover what we'll delete
+    db_files = sorted(data_dir.glob("*.db"))
+    if not db_files:
+        print("  No database files found. Nothing to reset.")
+        return
+
+    print()
+    print("🍡 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    if full_reset:
+        print("     Full Factory Reset")
+    else:
+        print("     Reset Conversation History")
+    print("   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print()
+
+    # Show what will be affected
+    for db_path in db_files:
+        agent_name = db_path.stem
+        try:
+            conn = sqlite3.connect(str(db_path))
+            cursor = conn.cursor()
+            tables = [row[0] for row in cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()]
+
+            print(f"  📦 {agent_name}.db")
+            for table in sorted(tables):
+                count = cursor.execute(f"SELECT COUNT(*) FROM [{table}]").fetchone()[0]
+                if full_reset:
+                    action = "DELETE"
+                elif table == "conversation_messages":
+                    action = "DELETE"
+                elif table == "memory_notes":
+                    action = "DELETE"
+                else:
+                    action = "keep"
+
+                icon = "🗑️ " if action == "DELETE" else "  "
+                print(f"    {icon}{table}: {count} rows {'→ DELETE' if action == 'DELETE' else '→ keep'}")
+
+            conn.close()
+        except Exception as e:
+            print(f"  ⚠️  {agent_name}.db: error reading ({e})")
+
+    if full_reset:
+        # Also show non-db files
+        other_files = [f for f in data_dir.rglob("*") if f.is_file() and f.suffix != ".db" and f.name != ".gitkeep"]
+        if other_files:
+            print()
+            print("  📁 Other data files:")
+            for f in other_files:
+                print(f"    🗑️  {f.relative_to(data_dir)} → DELETE")
+
+    print()
+
+    if full_reset:
+        print("  ⚠️  WARNING: This will delete ALL data including")
+        print("  zones, reminders, expirables, shortcuts, and aliases.")
+    else:
+        print("  ℹ️  This will clear conversation history and memory notes only.")
+        print("  Zones, reminders, expirables, and shortcuts will be preserved.")
+
+    print()
+    confirm = input("  Are you sure? Type 'yes' to confirm: ").strip().lower()
+
+    if confirm != "yes":
+        print("  ❌ Reset cancelled.")
+        return
+
+    print()
+
+    # Perform the reset
+    if full_reset:
+        # Delete all db files
+        for db_path in db_files:
+            db_path.unlink()
+            print(f"  🗑️  Deleted {db_path.name}")
+
+        # Delete other data files (but keep .gitkeep)
+        for f in data_dir.rglob("*"):
+            if f.is_file() and f.name != ".gitkeep":
+                f.unlink()
+                print(f"  🗑️  Deleted {f.relative_to(data_dir)}")
+
+        # Remove empty subdirectories
+        for d in sorted(data_dir.rglob("*"), reverse=True):
+            if d.is_dir() and not any(d.iterdir()):
+                d.rmdir()
+    else:
+        # Clear only conversation history and memory notes
+        history_tables = ["conversation_messages", "memory_notes"]
+        for db_path in db_files:
+            try:
+                conn = sqlite3.connect(str(db_path))
+                cursor = conn.cursor()
+                tables = [row[0] for row in cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()]
+
+                cleared = []
+                for table in history_tables:
+                    if table in tables:
+                        cursor.execute(f"DELETE FROM [{table}]")
+                        cleared.append(table)
+
+                conn.commit()
+                conn.close()
+                if cleared:
+                    print(f"  ✅ {db_path.stem}: cleared {', '.join(cleared)}")
+                else:
+                    print(f"  ⏭️  {db_path.stem}: no history tables")
+            except Exception as e:
+                print(f"  ⚠️  {db_path.stem}: error ({e})")
+
+    print()
+    print("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("  🍡 Reset complete! Restart mochi-agents to start fresh.")
+    print()
 
 
 # ---------------------------------------------------------------------------
