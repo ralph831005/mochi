@@ -38,6 +38,7 @@ class Settings(BaseModel):
     system_dir: Path = Path("./system")
     dashboard_port: int = 8080
     dashboard_enabled: bool = True
+    timezone: str = "America/Los_Angeles"  # IANA timezone for local dates
 
     # Internal: project root (not from YAML)
     project_root: Path = Field(default_factory=_find_project_root)
@@ -48,6 +49,11 @@ class Settings(BaseModel):
         if relative.is_absolute():
             return relative
         return self.project_root / relative
+
+    def get_tz(self):
+        """Return a ZoneInfo object for the configured timezone."""
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(self.timezone)
 
 
 # ---------------------------------------------------------------------------

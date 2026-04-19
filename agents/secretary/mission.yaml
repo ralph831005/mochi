@@ -1,6 +1,6 @@
 name: secretary
 display_name: "Sora"
-description: "Location-aware secretary. Manages geofence zones and sends reminders when you arrive/leave places."
+description: "Personal secretary & bookkeeper. Manages location-based reminders, tracks credits, coupons, and subscriptions with expiration dates."
 aliases: [s, sec, sora]
 routing_keys:
   - location
@@ -18,6 +18,17 @@ routing_keys:
   - errand
   - where
   - position
+  # Bookkeeping
+  - credit
+  - coupon
+  - expir
+  - subscription
+  - uber
+  - track
+  - booking
+  - expire
+  - due
+  - deadline
 tools_module: mochi_agents.agents.secretary.tools
 model_config:
   provider: google
@@ -31,3 +42,26 @@ context_tools:
     label: "My Zones"
   - tool: list_reminders
     label: "Active Reminders"
+  - tool: list_expirables
+    label: "Active Expirables"
+schedules:
+  - name: check_expiring_items
+    cron: "0 9 * * *"
+    action: check_expiring_items
+    target_user_ids: all
+
+  # --- Recurring expirables (uncomment & customize) ---
+  # Auto-creates a new expirable on the 1st of each month.
+  # Supported date templates: {end_of_month}, {start_of_next_month}, {today}, {today+N}
+  #
+  # - name: monthly_uber_credit
+  #   cron: "0 0 1 * *"          # 1st of each month at midnight UTC
+  #   action: add_expirable
+  #   mode: tool                  # calls the tool directly, no LLM
+  #   args:
+  #     title: "Uber Credit"
+  #     value: 25.0
+  #     category: "credit"
+  #     expiration_date: "{end_of_month}"
+  #   target_user_ids: all
+

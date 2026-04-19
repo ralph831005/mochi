@@ -28,6 +28,22 @@ from mochi_agents.memory.models import ConversationMessage
 
 logger = logging.getLogger(__name__)
 
+# Retry config for transient API errors (e.g., 503 overload)
+_RETRY_DELAYS = [60, 90, 120]  # seconds between retries
+
+# Context variable for notifying the user before retries
+import contextvars
+_retry_notify_callback: contextvars.ContextVar = contextvars.ContextVar(
+    "_retry_notify_callback", default=None
+)
+
+def set_retry_notify(callback) -> None:
+    """Set an async callback to notify the user before retrying.
+
+    The callback signature: async def callback(attempt: int, delay: int) -> None
+    """
+    _retry_notify_callback.set(callback)
+
 
 class AgentRuntime:
     """Executes an agent: assembles context, calls LLM, runs tools, persists memory."""
@@ -119,11 +135,20 @@ class AgentRuntime:
 
     async def _build_system_instruction(self, agent_name: str, extra_context: str = "", user_id: str = "") -> str:
         """Assemble system instruction = Soul + Mission + Memory Notes + Summary + Context Data + extra."""
+        from datetime import datetime
+        from mochi_agents.config import get_settings
+
         soul = self._load_soul()
         mission = self.get_mission(agent_name)
         mission_prompt = mission.get("mission_prompt", "")
 
         parts = [soul, mission_prompt]
+
+        # Inject current date/time so the LLM never guesses the wrong year
+        settings = get_settings()
+        local_tz = settings.get_tz()
+        now = datetime.now(local_tz)
+        parts.append(f"**Current date:** {now.strftime('%A, %B %d, %Y')} ({settings.timezone})")
 
         # Inject persistent memory notes (profile, goals, preferences)
         memory_notes = await self._load_memory_notes(agent_name)
@@ -379,9 +404,8 @@ class AgentRuntime:
         client = create_client(model_config)
         model_name = get_model_name(model_config)
 
-        summary_response = await client.aio.models.generate_content(
-            model=model_name,
-            contents=summarize_prompt,
+        summary_response = await self._generate_with_retry(
+            client, model_name, summarize_prompt,
             config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=1024),
         )
 
@@ -546,10 +570,8 @@ class AgentRuntime:
 
         logger.info(f"Executing agent '{agent_name}' with model '{model_name}'{' (stateless)' if is_stateless else ''}")
 
-        response = await client.aio.models.generate_content(
-            model=model_name,
-            contents=contents,
-            config=config,
+        response = await self._generate_with_retry(
+            client, model_name, contents, config=config,
         )
 
         # Handle tool calls in the response
@@ -669,15 +691,61 @@ class AgentRuntime:
                 types.Content(role="user", parts=tool_results)
             )
 
-            response = await client.aio.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=config,
+            response = await self._generate_with_retry(
+                client, model_name, contents, config=config,
             )
 
         # Safety: max turns hit
         logger.warning(f"Agent '{agent_name}' hit max tool loop turns ({max_turns})")
         return "I completed several steps but hit the iteration limit. Please check the results."
+
+    @staticmethod
+    async def _generate_with_retry(
+        client: Any,
+        model_name: str,
+        contents: Any,
+        *,
+        config: Any = None,
+    ) -> Any:
+        """Call generate_content with retry on transient 503/429 errors.
+
+        Retries up to len(_RETRY_DELAYS) times with the configured delays.
+        Non-retryable errors are raised immediately.
+        """
+        import asyncio
+        from google.genai.errors import ServerError, ClientError
+
+        last_error = None
+        for attempt in range(len(_RETRY_DELAYS) + 1):
+            try:
+                return await client.aio.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=config,
+                )
+            except (ServerError, ClientError) as e:
+                error_str = str(e)
+                is_retryable = any(code in error_str for code in ["503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED"])
+                if not is_retryable or attempt >= len(_RETRY_DELAYS):
+                    raise
+                delay = _RETRY_DELAYS[attempt]
+                logger.warning(
+                    f"API error (attempt {attempt + 1}/{len(_RETRY_DELAYS) + 1}): {e}. "
+                    f"Retrying in {delay}s..."
+                )
+
+                # Notify the user before waiting
+                notify = _retry_notify_callback.get(None)
+                if notify:
+                    try:
+                        await notify(attempt + 1, delay)
+                    except Exception:
+                        pass  # don't let notification failures break retry
+
+                last_error = e
+                await asyncio.sleep(delay)
+
+        raise last_error  # should never reach here
 
     def reload_missions(self) -> None:
         """Clear the mission cache so missions are re-loaded on next access."""

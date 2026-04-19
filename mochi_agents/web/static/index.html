@@ -709,6 +709,54 @@
             0%, 100% { opacity: 1; }
             50% { opacity: 0.4; }
         }
+
+        /* Bookkeeping */
+        .filter-bar {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .filter-btn {
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.15s;
+            font-family: inherit;
+        }
+
+        .filter-btn:hover { border-color: var(--accent); color: var(--text-primary); }
+        .filter-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
+
+        .status-badge {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .status-badge.active { background: rgba(52, 211, 153, 0.15); color: var(--success); }
+        .status-badge.expiring { background: rgba(251, 191, 36, 0.15); color: var(--warning); }
+        .status-badge.expired { background: rgba(248, 113, 113, 0.15); color: var(--danger); }
+        .status-badge.used { background: rgba(144, 144, 176, 0.15); color: var(--text-muted); }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-muted);
+        }
+
+        .empty-state .empty-icon { font-size: 48px; margin-bottom: 12px; }
+        .empty-state p { font-size: 14px; line-height: 1.6; }
     </style>
 </head>
 <body>
@@ -734,6 +782,9 @@
                 </div>
                 <div class="nav-item" data-page="config">
                     <span class="icon">⚙️</span><span>Config</span>
+                </div>
+                <div class="nav-item" data-page="bookkeeping">
+                    <span class="icon">📋</span><span>Bookkeeping</span>
                 </div>
                 <div class="nav-item" data-page="chat">
                     <span class="icon">💬</span><span>Chat</span>
@@ -826,6 +877,15 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Bookkeeping page -->
+            <div id="page-bookkeeping" class="page">
+                <h1 class="page-title">Bookkeeping</h1>
+                <p class="page-subtitle">Track credits, coupons, subscriptions & expirable items</p>
+                <div class="stat-grid" id="bookkeeping-stats"></div>
+                <div class="filter-bar" id="bookkeeping-filters"></div>
+                <div id="bookkeeping-content"></div>
+            </div>
         </main>
     </div>
 
@@ -881,6 +941,7 @@
             case 'aliases': return loadAliases();
             case 'schedules': return loadSchedules();
             case 'config': return loadConfig();
+            case 'bookkeeping': return loadBookkeeping();
             case 'chat': return initChat();
         }
     }
@@ -1789,6 +1850,152 @@
                 canvas.width = newW; canvas.height = newH;
             }
         });
+    }
+
+    // ---------------------------------------------------------------------------
+    // Bookkeeping page
+    // ---------------------------------------------------------------------------
+    let _bookkeepingData = null;
+    let _bookkeepingFilter = 'all';
+
+    async function loadBookkeeping() {
+        const content = document.getElementById('bookkeeping-content');
+        content.innerHTML = '<div class="loading">Loading expirables</div>';
+
+        try {
+            _bookkeepingData = await api('GET', '/api/expirables');
+        } catch (e) {
+            content.innerHTML = '<div class="loading">Failed to load</div>';
+            return;
+        }
+
+        const s = _bookkeepingData.summary || {};
+
+        // Stat cards
+        document.getElementById('bookkeeping-stats').innerHTML = `
+            <div class="stat-card">
+                <div class="stat-label">Active</div>
+                <div class="stat-value">${s.active || 0}</div>
+                <div class="stat-sub">${s.total || 0} total items</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Expiring Soon</div>
+                <div class="stat-value" style="color:var(--warning)">${s.expiring_soon || 0}</div>
+                <div class="stat-sub">Within 7 days</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Value at Risk</div>
+                <div class="stat-value" style="color:var(--danger)">$${(s.total_value_at_risk || 0).toFixed(2)}</div>
+                <div class="stat-sub">Expiring soon</div>
+            </div>
+        `;
+
+        // Filter bar
+        const filters = ['all', 'active', 'expiring', 'used', 'expired'];
+        const filterLabels = { all: 'All', active: 'Active', expiring: '⚠ Expiring ≤7d', used: 'Used', expired: 'Expired' };
+        document.getElementById('bookkeeping-filters').innerHTML = filters.map(f =>
+            `<button class="filter-btn ${_bookkeepingFilter === f ? 'active' : ''}" onclick="filterBookkeeping('${f}')">${filterLabels[f]}</button>`
+        ).join('');
+
+        renderBookkeepingTable();
+    }
+
+    function filterBookkeeping(filter) {
+        _bookkeepingFilter = filter;
+        // Update button states
+        document.querySelectorAll('#bookkeeping-filters .filter-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.textContent.toLowerCase().includes(filter) ||
+                (filter === 'all' && btn.textContent === 'All') ||
+                (filter === 'expiring' && btn.textContent.includes('Expiring')));
+        });
+        // Re-render with new filter
+        const filters = ['all', 'active', 'expiring', 'used', 'expired'];
+        const filterLabels = { all: 'All', active: 'Active', expiring: '⚠ Expiring ≤7d', used: 'Used', expired: 'Expired' };
+        document.getElementById('bookkeeping-filters').innerHTML = filters.map(f =>
+            `<button class="filter-btn ${_bookkeepingFilter === f ? 'active' : ''}" onclick="filterBookkeeping('${f}')">${filterLabels[f]}</button>`
+        ).join('');
+        renderBookkeepingTable();
+    }
+
+    function renderBookkeepingTable() {
+        const content = document.getElementById('bookkeeping-content');
+        if (!_bookkeepingData || !_bookkeepingData.items) {
+            content.innerHTML = '<div class="empty-state"><div class="empty-icon">📋</div><p>No expirable items yet.<br>Talk to Sora to add credits, coupons, or subscriptions.</p></div>';
+            return;
+        }
+
+        let items = _bookkeepingData.items;
+
+        // Apply filter
+        switch (_bookkeepingFilter) {
+            case 'active':
+                items = items.filter(i => i.status === 'active');
+                break;
+            case 'expiring':
+                items = items.filter(i => i.status === 'active' && i.days_left <= 7);
+                break;
+            case 'used':
+                items = items.filter(i => i.status === 'used');
+                break;
+            case 'expired':
+                items = items.filter(i => i.status === 'expired');
+                break;
+        }
+
+        if (items.length === 0) {
+            content.innerHTML = `<div class="empty-state"><div class="empty-icon">🔍</div><p>No items match this filter.</p></div>`;
+            return;
+        }
+
+        function getStatusBadge(item) {
+            if (item.status === 'used') return '<span class="status-badge used">Used</span>';
+            if (item.status === 'expired') return '<span class="status-badge expired">Expired</span>';
+            if (item.days_left <= 7) return '<span class="status-badge expiring">Expiring</span>';
+            return '<span class="status-badge active">Active</span>';
+        }
+
+        function formatDate(iso) {
+            if (!iso) return '—';
+            const d = new Date(iso);
+            return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        }
+
+        function formatDaysLeft(item) {
+            if (item.status !== 'active') return '—';
+            if (item.days_left === 0) return '<strong style="color:var(--danger)">Today!</strong>';
+            if (item.days_left <= 3) return `<strong style="color:var(--danger)">${item.days_left}d</strong>`;
+            if (item.days_left <= 7) return `<strong style="color:var(--warning)">${item.days_left}d</strong>`;
+            return `${item.days_left}d`;
+        }
+
+        const rows = items.map(i => `
+            <tr>
+                <td><strong>${i.title}</strong>${i.description ? `<br><span style="color:var(--text-muted);font-size:11px">${i.description}</span>` : ''}</td>
+                <td>${i.category ? `<span class="tag">${i.category}</span>` : '—'}</td>
+                <td>${i.value != null ? `$${i.value.toFixed(2)}` : '—'}</td>
+                <td>${formatDate(i.expiration_date)}</td>
+                <td>${formatDaysLeft(i)}</td>
+                <td>${getStatusBadge(i)}</td>
+            </tr>
+        `).join('');
+
+        content.innerHTML = `
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Title</th>
+                            <th>Category</th>
+                            <th>Value</th>
+                            <th>Expires</th>
+                            <th>Days Left</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        `;
     }
 
     </script>

@@ -214,6 +214,20 @@ class MochiBot:
 
                 logger.info(f"Received: [{message.user_id}] {message.text[:100]}")
 
+                # Set up retry notification so user knows we're retrying, not hanging
+                from mochi_agents.core.agent_runtime import set_retry_notify, _RETRY_DELAYS
+
+                async def _notify_retry(attempt: int, delay: int) -> None:
+                    try:
+                        await self.client.send(
+                            message.chat_id,
+                            f"⏳ Gemini API error — retrying in {delay}s (attempt {attempt}/{len(_RETRY_DELAYS)})...",
+                        )
+                    except Exception:
+                        pass
+
+                set_retry_notify(_notify_retry)
+
                 response = await self.router.route(
                     text=message.text,
                     user_id=message.user_id,
@@ -235,10 +249,24 @@ class MochiBot:
             except Exception as e:
                 logger.error(f"Error processing message: {e}", exc_info=True)
                 try:
-                    await self.client.send(
-                        message.chat_id,
-                        "Sorry, something went wrong. Please try again.",
-                    )
+                    # Give a clear message when it's a Gemini API issue
+                    error_str = str(e)
+                    if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                        user_msg = (
+                            "⚠️ Your Gemini API key has hit its rate limit. "
+                            "I've already retried a few times. Please wait a few minutes or check your quota at "
+                            "https://aistudio.google.com/apikey"
+                        )
+                    elif "503" in error_str or "UNAVAILABLE" in error_str:
+                        user_msg = (
+                            "⚠️ The Gemini API is currently overloaded (503). "
+                            "This is on Google's side. I've already retried — please try again in a few minutes."
+                        )
+                    elif "ServerError" in type(e).__name__ or "google.genai" in error_str:
+                        user_msg = f"⚠️ The Gemini API returned an error: {type(e).__name__}. Please try again later."
+                    else:
+                        user_msg = "Sorry, something went wrong. Please try again."
+                    await self.client.send(message.chat_id, user_msg)
                 except Exception:
                     pass
 

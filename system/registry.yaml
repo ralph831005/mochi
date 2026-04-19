@@ -52,7 +52,7 @@ agents:
 
   - name: secretary
     display_name: "Sora"
-    description: "Location-aware secretary. Manages geofence zones and sends reminders when you arrive/leave places."
+    description: "Personal secretary & bookkeeper. Manages location reminders and tracks credits, coupons, subscriptions with expiration dates."
     routing_keys:
       - location
       - remind
@@ -69,4 +69,15 @@ agents:
       - errand
       - where
       - position
+      - credit
+      - coupon
+      - expir
+      - subscription
+      - uber
+      - track
+      - booking
+      - expire
+      - due
+      - deadline
     status: active
+

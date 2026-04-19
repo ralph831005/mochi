@@ -221,6 +221,7 @@ async def get_current_location(
 def get_tools() -> list:
     """Return all secretary tools."""
     return [
+        # Location / geofence
         set_zone,
         set_zone_here,
         remove_zone,
@@ -229,7 +230,13 @@ def get_tools() -> list:
         remove_reminder,
         list_reminders,
         get_current_location,
+        # Bookkeeping / expirables
+        add_expirable,
+        use_expirable,
+        list_expirables,
+        remove_expirable,
     ]
+
 
 # ---------------------------------------------------------------------------
 # Expirable Items (Bookkeeping)
@@ -238,80 +245,87 @@ def get_tools() -> list:
 async def add_expirable(
     title: str,
     expiration_date: str,
-    description: str = "",
     value: float = 0.0,
-    is_recurring: bool = False,
-    recurrence_rule: str = "",
+    description: str = "",
+    category: str = "",
     user_id: str = "",
 ) -> dict[str, Any]:
-    """Add a new item with an expiration date, like a credit or note.
+    """Add a new item with an expiration date (credit, coupon, subscription, etc.).
 
     Args:
-        title: Short title for the item.
-        expiration_date: ISO8601 string (e.g., '2023-12-31T23:59:00Z').
-        description: Detailed info or terms.
-        value: Monetary or point value (e.g., 15.0).
-        is_recurring: True if this item renews (e.g., monthly credit).
-        recurrence_rule: Describe the frequency, e.g. 'monthly'.
-        user_id: Owner user ID.
+        title: Short title (e.g., "Uber Credit", "Costco Coupon").
+        expiration_date: When it expires. Accepts flexible formats:
+            "2026-05-01", "May 1 2026", "end of month", "2026-05-01T00:00:00Z".
+        value: Monetary or point value (e.g., 15.0). Optional.
+        description: Extra details or terms. Optional.
+        category: Grouping label (e.g., "credit", "coupon", "subscription"). Optional.
+        user_id: Owner user ID (auto-injected).
 
-    Example: add_expirable("Uber Credit", "2026-05-01T00:00:00Z", value=15.0, is_recurring=True, recurrence_rule="monthly")
+    Examples:
+        add_expirable("Uber Credit", "2026-05-01", value=15.0, category="credit")
+        add_expirable("Costco Coupon", "2026-06-30", value=5.0, category="coupon")
     """
     from datetime import datetime
-    import dateutil.parser
     from mochi_agents.config import get_settings
     from mochi_agents.memory.database import get_session_factory
     from mochi_agents.memory.models import ExpirableItem
-    
+
     settings = get_settings()
-    data_dir = settings.resolve_path(settings.data_dir)
-    factory = get_session_factory("secretary", data_dir)
-    
+    local_tz = settings.get_tz()
+
+    # Parse expiration date flexibly
     try:
-        exp_dt = dateutil.parser.isoparse(expiration_date)
+        import dateutil.parser
+        exp_dt = dateutil.parser.parse(expiration_date)
+        # Ensure timezone-aware (default to local timezone, not UTC)
+        if exp_dt.tzinfo is None:
+            exp_dt = exp_dt.replace(tzinfo=local_tz)
     except Exception as e:
-        return {"status": "error", "message": f"Invalid date format: {e}"}
+        return {"status": "error", "message": f"Could not parse date '{expiration_date}': {e}"}
 
-    async with factory() as session:
-        item = ExpirableItem(
-            user_id=user_id,
-            title=title,
-            description=description,
-            value=value,
-            expiration_date=exp_dt,
-            is_recurring=is_recurring,
-            recurrence_rule=recurrence_rule
-        )
-        session.add(item)
-        await session.commit()
-        return {"status": "ok", "id": item.id}
+    # Reject dates in the past (compare in local time)
+    now = datetime.now(local_tz)
+    if exp_dt < now:
+        return {
+            "status": "error",
+            "message": f"Expiration date {exp_dt.strftime('%Y-%m-%d')} is in the past. "
+                       f"Today is {now.strftime('%Y-%m-%d')}. Please use a future date.",
+        }
 
-
-async def remove_expirable(
-    item_id: int,
-    user_id: str = "",
-) -> dict[str, Any]:
-    """Delete an expirable item.
-    """
-    from sqlalchemy import select
-    from mochi_agents.config import get_settings
-    from mochi_agents.memory.database import get_session_factory
-    from mochi_agents.memory.models import ExpirableItem
-    
-    settings = get_settings()
     data_dir = settings.resolve_path(settings.data_dir)
     factory = get_session_factory("secretary", data_dir)
-    
-    async with factory() as session:
-        stmt = select(ExpirableItem).where(ExpirableItem.id == item_id, ExpirableItem.user_id == user_id)
-        res = await session.execute(stmt)
-        item = res.scalar_one_or_none()
-        if not item:
-            return {"status": "error", "message": f"Item {item_id} not found."}
-        
-        await session.delete(item)
-        await session.commit()
-        return {"status": "ok", "message": "Item deleted."}
+
+    # Coerce value — LLM often sends strings like '25.0'
+    numeric_value = None
+    if value:
+        try:
+            numeric_value = float(value)
+        except (ValueError, TypeError):
+            numeric_value = None
+
+    try:
+        async with factory() as session:
+            item = ExpirableItem(
+                user_id=user_id,
+                title=title,
+                description=description or None,
+                value=numeric_value,
+                category=category.lower().strip() if category else None,
+                expiration_date=exp_dt,
+                status="active",
+            )
+            session.add(item)
+            await session.commit()
+            item_id = item.id
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to save: {type(e).__name__}: {e}"}
+
+    return {
+        "status": "ok",
+        "id": item_id,
+        "title": title,
+        "expiration_date": exp_dt.isoformat(),
+    }
 
 
 async def use_expirable(
@@ -320,105 +334,208 @@ async def use_expirable(
 ) -> dict[str, Any]:
     """Mark an expirable item as used.
 
-    If it's recurring, the agent can manually create the next one using add_expirable, 
-    or the user can ask to create it.
+    Args:
+        item_id: The numeric ID of the item.
+        user_id: Owner user ID.
+
+    Example: use_expirable(3)
     """
     from sqlalchemy import select
     from mochi_agents.config import get_settings
     from mochi_agents.memory.database import get_session_factory
     from mochi_agents.memory.models import ExpirableItem
-    
+
     settings = get_settings()
     data_dir = settings.resolve_path(settings.data_dir)
     factory = get_session_factory("secretary", data_dir)
-    
+
     async with factory() as session:
-        stmt = select(ExpirableItem).where(ExpirableItem.id == item_id, ExpirableItem.user_id == user_id)
+        stmt = select(ExpirableItem).where(
+            ExpirableItem.id == item_id,
+            ExpirableItem.user_id == user_id,
+        )
         res = await session.execute(stmt)
         item = res.scalar_one_or_none()
         if not item:
-            return {"status": "error", "message": f"Item {item_id} not found."}
-        
+            return {"status": "error", "message": f"Item #{item_id} not found."}
+
         item.status = "used"
         await session.commit()
-        return {"status": "ok", "message": f"Item '{item.title}' marked as used."}
+        return {"status": "ok", "message": f"'{item.title}' marked as used."}
 
 
 async def list_expirables(
-    status: str = "active",
+    status: str = "",
+    category: str = "",
     user_id: str = "",
 ) -> dict[str, Any]:
-    """List expirable items for the user. Status can be 'active', 'used', or 'expired'."""
+    """List expirable items, optionally filtered by status and/or category.
+
+    Also auto-expires any active items past their expiration date.
+
+    Args:
+        status: Filter by status: "active", "used", "expired", or "" for all.
+        category: Filter by category (e.g., "credit", "coupon"), or "" for all.
+        user_id: Owner user ID.
+    """
+    from datetime import datetime, timezone
     from sqlalchemy import select
     from mochi_agents.config import get_settings
     from mochi_agents.memory.database import get_session_factory
     from mochi_agents.memory.models import ExpirableItem
-    
+
     settings = get_settings()
     data_dir = settings.resolve_path(settings.data_dir)
     factory = get_session_factory("secretary", data_dir)
-    
+
+    now = datetime.now(timezone.utc)
+
     async with factory() as session:
-        stmt = select(ExpirableItem).where(ExpirableItem.user_id == user_id, ExpirableItem.status == status).order_by(ExpirableItem.expiration_date)
+        # Auto-expire active items that are past their date
+        expire_stmt = (
+            select(ExpirableItem)
+            .where(
+                ExpirableItem.user_id == user_id,
+                ExpirableItem.status == "active",
+                ExpirableItem.expiration_date <= now,
+            )
+        )
+        expire_res = await session.execute(expire_stmt)
+        for stale in expire_res.scalars().all():
+            stale.status = "expired"
+        await session.commit()
+
+        # Build filtered query
+        stmt = (
+            select(ExpirableItem)
+            .where(ExpirableItem.user_id == user_id)
+            .order_by(ExpirableItem.expiration_date)
+        )
+        if status:
+            stmt = stmt.where(ExpirableItem.status == status.lower().strip())
+        if category:
+            stmt = stmt.where(ExpirableItem.category == category.lower().strip())
+
         res = await session.execute(stmt)
         items = res.scalars().all()
-        
-        return {
-            "count": len(items),
-            "items": [
-                {
-                    "id": i.id,
-                    "title": i.title,
-                    "value": i.value,
-                    "expiration_date": i.expiration_date.isoformat(),
-                    "is_recurring": i.is_recurring,
-                    "recurrence_rule": i.recurrence_rule,
-                    "status": i.status
-                } for i in items
-            ]
-        }
+
+    return {
+        "count": len(items),
+        "items": [
+            {
+                "id": i.id,
+                "title": i.title,
+                "description": i.description,
+                "value": i.value,
+                "category": i.category,
+                "expiration_date": i.expiration_date.isoformat(),
+                "status": i.status,
+                "days_left": max(0, (i.expiration_date.replace(tzinfo=timezone.utc) - now).days)
+                    if i.status == "active" else 0,
+            }
+            for i in items
+        ],
+    }
 
 
-async def check_expiring_soon(
+async def remove_expirable(
+    item_id: int,
     user_id: str = "",
 ) -> dict[str, Any]:
-    """Check for items expiring in the next 7 days and not used.
-    Designed to be run as a cron job to send an alert.
+    """Delete an expirable item permanently.
+
+    Args:
+        item_id: The numeric ID of the item to remove.
+        user_id: Owner user ID.
+
+    Example: remove_expirable(5)
     """
     from sqlalchemy import select
-    from datetime import datetime, timezone, timedelta
     from mochi_agents.config import get_settings
     from mochi_agents.memory.database import get_session_factory
     from mochi_agents.memory.models import ExpirableItem
-    
+
     settings = get_settings()
     data_dir = settings.resolve_path(settings.data_dir)
     factory = get_session_factory("secretary", data_dir)
-    
-    now = datetime.now(timezone.utc)
-    next_week = now + timedelta(days=7)
-    
+
     async with factory() as session:
         stmt = select(ExpirableItem).where(
+            ExpirableItem.id == item_id,
             ExpirableItem.user_id == user_id,
-            ExpirableItem.status == "active",
-            ExpirableItem.expiration_date <= next_week
-        ).order_by(ExpirableItem.expiration_date)
+        )
+        res = await session.execute(stmt)
+        item = res.scalar_one_or_none()
+        if not item:
+            return {"status": "error", "message": f"Item #{item_id} not found."}
+
+        await session.delete(item)
+        await session.commit()
+        return {"status": "ok", "message": f"'{item.title}' deleted."}
+
+
+# ---------------------------------------------------------------------------
+# Cron action: check_expiring_items (called by Scheduler)
+# ---------------------------------------------------------------------------
+
+async def check_expiring_items(
+    user_id: str = "",
+) -> str:
+    """Check for items expiring within 3 days and return a reminder message.
+
+    Called by the Scheduler cron job. Returns a formatted message for the user.
+    """
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import select
+    from mochi_agents.config import get_settings
+    from mochi_agents.memory.database import get_session_factory
+    from mochi_agents.memory.models import ExpirableItem
+
+    settings = get_settings()
+    data_dir = settings.resolve_path(settings.data_dir)
+    factory = get_session_factory("secretary", data_dir)
+
+    now = datetime.now(timezone.utc)
+    cutoff = now + timedelta(days=3)
+
+    async with factory() as session:
+        # Auto-expire first
+        expire_stmt = (
+            select(ExpirableItem)
+            .where(
+                ExpirableItem.user_id == user_id,
+                ExpirableItem.status == "active",
+                ExpirableItem.expiration_date <= now,
+            )
+        )
+        expire_res = await session.execute(expire_stmt)
+        for stale in expire_res.scalars().all():
+            stale.status = "expired"
+        await session.commit()
+
+        # Find items expiring soon
+        stmt = (
+            select(ExpirableItem)
+            .where(
+                ExpirableItem.user_id == user_id,
+                ExpirableItem.status == "active",
+                ExpirableItem.expiration_date <= cutoff,
+                ExpirableItem.expiration_date > now,
+            )
+            .order_by(ExpirableItem.expiration_date)
+        )
         res = await session.execute(stmt)
         items = res.scalars().all()
-        
-        if not items:
-            return {"status": "ok", "message": "Nothing expiring in the next 7 days."}
-            
-        return {
-            "status": "alert",
-            "message": "You have items expiring soon!",
-            "items": [
-                {
-                    "id": i.id,
-                    "title": i.title,
-                    "value": i.value,
-                    "expiration_date": i.expiration_date.isoformat()
-                } for i in items
-            ]
-        }
+
+    if not items:
+        return ""  # empty = nothing to report, scheduler skips
+
+    lines = ["⏰ **Expiring soon:**"]
+    for item in items:
+        days = (item.expiration_date.replace(tzinfo=timezone.utc) - now).days
+        val = f" (${item.value:.2f})" if item.value else ""
+        day_label = "today" if days == 0 else f"in {days} day{'s' if days != 1 else ''}"
+        lines.append(f"• **{item.title}**{val} — expires {day_label}")
+
+    return "\n".join(lines)
+

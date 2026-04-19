@@ -140,19 +140,23 @@ class LocationReminder(Base):
     )
 
 class ExpirableItem(Base):
-    """Tracks expirable notes, credits, and recurring items for the user."""
+    """Tracks credits, coupons, subscriptions, and other time-sensitive items.
+
+    Status lifecycle: active → used | expired.
+    Items past their expiration_date are auto-expired on query.
+    """
 
     __tablename__ = "expirable_items"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(String(50))
-    title: Mapped[str] = mapped_column(String(100))
+    title: Mapped[str] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    value: Mapped[float | None] = mapped_column(Float, nullable=True)  # optional monetary/point value
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)  # monetary/point value
+    category: Mapped[str | None] = mapped_column(String(50), nullable=True)  # credit, coupon, subscription, etc.
     expiration_date: Mapped[datetime] = mapped_column(DateTime)
-    is_recurring: Mapped[bool] = mapped_column(Integer, default=False)
-    recurrence_rule: Mapped[str | None] = mapped_column(String(50), nullable=True) # e.g. "monthly", "yearly"
     status: Mapped[str] = mapped_column(String(20), default="active")  # active, used, expired
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)
     )
+
