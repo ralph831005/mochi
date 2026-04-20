@@ -55,9 +55,10 @@ Usage:
   mochi-agents config show      Show current configuration
   mochi-agents config set K V   Set a configuration value
   mochi-agents agent list       List all registered agents
-  mochi-agents agent info NAME  Show agent details
-  mochi-agents agent export NAME  Export an agent as a .zip bundle
-  mochi-agents agent import FILE  Import an agent from a .zip bundle
+  mochi-agents agent info NAME    Show agent details
+  mochi-agents agent export NAME  Export an agent as a .agent bundle
+  mochi-agents agent import FILE  Import an agent from a .agent bundle
+  mochi-agents agent remove NAME  Remove an agent (with confirmation)
   mochi-agents reset            Reset all agents' conversation history
   mochi-agents reset NAME       Reset a specific agent's history
   mochi-agents reset --all      Full factory reset (deletes all data)
@@ -343,7 +344,7 @@ def _config_del_key() -> None:
 def run_agent() -> None:
     """Handle `mochi-agents agent` subcommands."""
     if len(sys.argv) < 3:
-        print("Usage: mochi-agents agent <list|info|export|import>")
+        print("Usage: mochi-agents agent <list|info|export|import|remove>")
         sys.exit(1)
 
     sub = sys.argv[2]
@@ -355,6 +356,8 @@ def run_agent() -> None:
         _agent_export()
     elif sub == "import":
         _agent_import()
+    elif sub == "remove":
+        _agent_remove()
     else:
         print(f"Unknown agent command: {sub}")
         sys.exit(1)
@@ -414,8 +417,139 @@ def _agent_info() -> None:
     print(yaml.dump(mission, default_flow_style=False, sort_keys=False))
 
 
+def _agent_remove() -> None:
+    """Remove an agent completely.
+
+    Usage: mochi-agents agent remove <name>
+
+    Removes:
+        - agents/<name>/  (config)
+        - mochi_agents/agents/<name>/  (code, if not a default agent)
+        - data/<name>.db  (database)
+        - data/shortcuts/<name>.yaml  (shortcuts)
+        - system/registry.yaml entry
+        - config.yaml agent_overrides entry
+    """
+    import shutil
+
+    if len(sys.argv) < 4:
+        print("Usage: mochi-agents agent remove <name>")
+        sys.exit(1)
+
+    name = sys.argv[3]
+    project_root = _find_project_root()
+
+    # Gather what exists
+    agent_config_dir = project_root / "agents" / name
+    agent_code_dir = project_root / "mochi_agents" / "agents" / name
+    config = _load_yaml(project_root / "config.yaml")
+    data_dir = project_root / Path(config.get("data_dir", "./data"))
+    db_file = data_dir / f"{name}.db"
+    shortcuts_file = data_dir / "shortcuts" / f"{name}.yaml"
+    registry_path = project_root / "system" / "registry.yaml"
+
+    if not agent_config_dir.exists() and not db_file.exists():
+        print(f"  ❌ Agent '{name}' not found.")
+        sys.exit(1)
+
+    # Load display name
+    display_name = name
+    mission_path = agent_config_dir / "mission.yaml"
+    if mission_path.exists():
+        with open(mission_path) as f:
+            mission = yaml.safe_load(f) or {}
+        display_name = mission.get("display_name", name)
+
+    print()
+    print("🍡 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print(f"    Removing Agent: {display_name}")
+    print("   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print()
+
+    # Show what will be deleted
+    items = []
+    if agent_config_dir.exists():
+        files = list(agent_config_dir.rglob("*"))
+        items.append((f"agents/{name}/", f"{len([f for f in files if f.is_file()])} files"))
+        print(f"  🗑️  agents/{name}/ (mission config)")
+    if agent_code_dir.exists():
+        files = [f for f in agent_code_dir.rglob("*") if f.is_file() and "__pycache__" not in str(f)]
+        items.append((f"mochi_agents/agents/{name}/", f"{len(files)} files"))
+        print(f"  🗑️  mochi_agents/agents/{name}/ (tool code)")
+    if db_file.exists():
+        size_kb = db_file.stat().st_size // 1024
+        items.append((db_file.name, f"{size_kb}KB"))
+        print(f"  🗑️  data/{name}.db ({size_kb}KB)")
+    if shortcuts_file.exists():
+        items.append((f"shortcuts/{name}.yaml", ""))
+        print(f"  🗑️  data/shortcuts/{name}.yaml")
+    if config.get("agent_overrides", {}).get(name):
+        print(f"  🗑️  config.yaml agent_overrides.{name}")
+
+    # Check registry
+    in_registry = False
+    if registry_path.exists():
+        with open(registry_path) as f:
+            registry = yaml.safe_load(f) or {}
+        if name in [a["name"] for a in registry.get("agents", [])]:
+            in_registry = True
+            print(f"  🗑️  system/registry.yaml entry")
+
+    print()
+    print(f"  ⚠️  This will permanently remove {display_name} and all its data.")
+    print(f"  💡 Tip: run 'mochi-agents agent export {name}' first to back up.")
+    print()
+    confirm = input("  Are you sure? Type 'yes' to confirm: ").strip().lower()
+
+    if confirm != "yes":
+        print("  ❌ Removal cancelled.")
+        return
+
+    print()
+
+    # Delete config dir
+    if agent_config_dir.exists():
+        shutil.rmtree(agent_config_dir)
+        print(f"  ✅ Deleted agents/{name}/")
+
+    # Delete code dir
+    if agent_code_dir.exists():
+        shutil.rmtree(agent_code_dir)
+        print(f"  ✅ Deleted mochi_agents/agents/{name}/")
+
+    # Delete database
+    if db_file.exists():
+        db_file.unlink()
+        print(f"  ✅ Deleted data/{name}.db")
+
+    # Delete shortcuts
+    if shortcuts_file.exists():
+        shortcuts_file.unlink()
+        print(f"  ✅ Deleted data/shortcuts/{name}.yaml")
+
+    # Remove from registry
+    if in_registry:
+        registry["agents"] = [a for a in registry.get("agents", []) if a["name"] != name]
+        with open(registry_path, "w") as f:
+            yaml.dump(registry, f, default_flow_style=False, sort_keys=False)
+        print(f"  ✅ Removed from registry")
+
+    # Remove config overrides
+    config_path = project_root / "config.yaml"
+    if config_path.exists() and config.get("agent_overrides", {}).get(name):
+        del config["agent_overrides"][name]
+        with open(config_path, "w") as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        print(f"  ✅ Removed config overrides")
+
+    print()
+    print("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print(f"  🍡 {display_name} has been removed. Send /reload to apply.")
+    print()
+
+
 def _agent_export() -> None:
-    """Export an agent as a portable .zip bundle.
+    """Export an agent as a portable .agent bundle.
 
     Usage: mochi-agents agent export <name> [--with-memory]
 
@@ -474,7 +608,7 @@ def _agent_export() -> None:
         "includes_code": agent_code_dir.exists(),
     }
 
-    output_file = project_root / f"{name}-agent.zip"
+    output_file = project_root / f"{name}.agent"
 
     with zipfile.ZipFile(output_file, "w", zipfile.ZIP_DEFLATED) as zf:
         # 1. Agent config (mission.yaml, mission_prompt.md)
@@ -521,7 +655,30 @@ def _agent_export() -> None:
                 except Exception as e:
                     print(f"  ⚠️  Could not export memory: {e}")
 
-        # 5. Manifest
+        # 5. MCP skill files (from config.yaml agent_overrides)
+        config_data = _load_yaml(project_root / "config.yaml")
+        agent_overrides = config_data.get("agent_overrides", {}).get(name, {})
+        mcp_servers = agent_overrides.get("mcp_servers", [])
+
+        if mcp_servers:
+            # Save the MCP config
+            zf.writestr("mcp_servers.json", json.dumps(mcp_servers, indent=2))
+            print(f"  🔌 mcp_servers.json")
+
+            # Find and bundle referenced skill files
+            skills_dir = project_root / "skills_server" / "skills"
+            for server in mcp_servers:
+                if isinstance(server, dict):
+                    for tool_name in server.get("tools", []):
+                        skill_file = skills_dir / f"{tool_name}.py"
+                        if skill_file.exists():
+                            arcname = f"skills_server/skills/{tool_name}.py"
+                            zf.write(skill_file, arcname)
+                            print(f"  🔌 {arcname}")
+
+            manifest["includes_mcp"] = True
+
+        # 6. Manifest
         zf.writestr("manifest.json", json.dumps(manifest, indent=2))
         print(f"  📝 manifest.json")
 
@@ -532,16 +689,16 @@ def _agent_export() -> None:
 
 
 def _agent_import() -> None:
-    """Import an agent from a .zip bundle.
+    """Import an agent from a .agent bundle.
 
-    Usage: mochi-agents agent import <file.zip> [--with-memory]
+    Usage: mochi-agents agent import <file.agent> [--with-memory]
     """
     import json
     import sqlite3
     import zipfile
 
     if len(sys.argv) < 4:
-        print("Usage: mochi-agents agent import <file.zip> [--with-memory]")
+        print("Usage: mochi-agents agent import <file.agent> [--with-memory]")
         sys.exit(1)
 
     zip_path = Path(sys.argv[3])
@@ -574,6 +731,7 @@ def _agent_import() -> None:
         print(f"  Exported:    {manifest.get('exported_at', 'unknown')}")
         print(f"  Has code:    {manifest.get('includes_code', False)}")
         print(f"  Has memory:  {manifest.get('includes_memory', False)}")
+        print(f"  Has MCP:     {manifest.get('includes_mcp', False)}")
         print()
 
         # List contents
@@ -600,6 +758,8 @@ def _agent_import() -> None:
             if info.filename == "manifest.json":
                 continue
             if info.filename == "memory_notes.json":
+                continue  # handle separately
+            if info.filename == "mcp_servers.json":
                 continue  # handle separately
 
             target = project_root / info.filename
@@ -648,6 +808,18 @@ def _agent_import() -> None:
                     print(f"  ⚠️  Could not import memory: {e}")
         elif import_memory:
             print("  ℹ️  No memory notes in bundle")
+
+        # Import MCP config (merge into config.yaml agent_overrides)
+        if "mcp_servers.json" in zf.namelist():
+            mcp_servers = json.loads(zf.read("mcp_servers.json"))
+            config_path = project_root / "config.yaml"
+            config_data = _load_yaml(config_path)
+            overrides = config_data.setdefault("agent_overrides", {})
+            agent_section = overrides.setdefault(name, {})
+            agent_section["mcp_servers"] = mcp_servers
+            with open(config_path, "w") as f:
+                yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+            print(f"  🔌 Imported MCP config into config.yaml")
 
     # Register agent in registry if not already there
     registry_path = project_root / "system" / "registry.yaml"

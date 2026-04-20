@@ -8,7 +8,7 @@ config.yaml
 data/*.db
 
 # Agent export bundles
-*-agent.zip
+*.agent
 
 # Python
 __pycache__/
