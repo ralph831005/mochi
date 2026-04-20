@@ -54,7 +54,7 @@ class AgentRuntime:
         self._model_overrides: dict[str, dict[str, Any]] = {}  # runtime overrides
 
     def load_mission(self, agent_name: str) -> dict[str, Any]:
-        """Load and cache an agent's mission.yaml."""
+        """Load and cache an agent's mission.yaml, merged with config.yaml overrides."""
         settings = get_settings()
         agents_dir = settings.resolve_path(settings.agents_dir)
         mission_path = agents_dir / agent_name / "mission.yaml"
@@ -66,6 +66,14 @@ class AgentRuntime:
         prompt_path = agents_dir / agent_name / "mission_prompt.md"
         if prompt_path.exists():
             mission["mission_prompt"] = prompt_path.read_text()
+
+        # Merge config.yaml agent_overrides on top of mission defaults
+        overrides = settings.agent_overrides.get(agent_name, {})
+        for key, value in overrides.items():
+            if isinstance(value, dict) and isinstance(mission.get(key), dict):
+                mission[key].update(value)  # deep merge for dicts (e.g., model_config)
+            else:
+                mission[key] = value  # replace for lists/scalars (e.g., mcp_servers)
 
         self._mission_cache[agent_name] = mission
         return mission
@@ -101,27 +109,17 @@ class AgentRuntime:
             self._model_overrides.clear()
 
     def update_model_config(self, agent_name: str, updates: dict[str, Any]) -> dict[str, Any]:
-        """Permanently update an agent's model_config in mission.yaml."""
-        settings = get_settings()
-        mission_path = settings.resolve_path(settings.agents_dir) / agent_name / "mission.yaml"
-        
-        if not mission_path.exists():
-            raise FileNotFoundError(f"Mission file not found for agent '{agent_name}'")
+        """Permanently update an agent's model_config via config.yaml overrides.
 
-        with open(mission_path) as f:
-            mission = yaml.safe_load(f) or {}
+        Writes to config.yaml (user-specific) instead of mission.yaml (committed defaults).
+        """
+        from mochi_agents.config import save_agent_override
 
-        if "model_config" not in mission:
-            mission["model_config"] = {}
-
-        mission["model_config"].update(updates)
-
-        with open(mission_path, "w") as f:
-            yaml.dump(mission, f, sort_keys=False)
+        save_agent_override(agent_name, "model_config", updates)
 
         # Clear ephemeral overrides so the new base applies immediately
         self.clear_model_overrides(agent_name)
-        
+
         # Reload cache
         return self.load_mission(agent_name)
 

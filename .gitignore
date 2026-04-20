@@ -1,8 +1,14 @@
 # Secrets
 secret.yaml
 
+# User-specific config (runtime overrides, schedules, agent_overrides)
+config.yaml
+
 # Data
 data/*.db
+
+# Agent export bundles
+*-agent.zip
 
 # Python
 __pycache__/

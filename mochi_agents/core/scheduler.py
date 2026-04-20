@@ -67,32 +67,50 @@ class Scheduler:
         self._tick_interval = 30  # seconds
 
     def load_cron_jobs(self) -> None:
-        """Scan all agent mission files for `schedules` blocks."""
+        """Scan agent mission files AND config.yaml for cron schedules.
+
+        Two sources are merged:
+        1. Agent mission.yaml `schedules` blocks — framework defaults (committed)
+        2. config.yaml `schedules` list — user-specific (not committed)
+
+        Config schedules require an `agent` key to specify the target agent.
+        """
         settings = get_settings()
         agents_dir = settings.resolve_path(settings.agents_dir)
         self._cron_jobs.clear()
 
-        if not agents_dir.exists():
-            return
+        # Source 1: Agent mission.yaml files
+        if agents_dir.exists():
+            for mission_path in agents_dir.glob("*/mission.yaml"):
+                agent_name = mission_path.parent.name
+                with open(mission_path) as f:
+                    mission = yaml.safe_load(f) or {}
 
-        for mission_path in agents_dir.glob("*/mission.yaml"):
-            agent_name = mission_path.parent.name
-            with open(mission_path) as f:
-                mission = yaml.safe_load(f) or {}
+                for schedule in mission.get("schedules", []):
+                    self._register_job(agent_name, schedule, source="mission")
 
-            for schedule in mission.get("schedules", []):
-                job = {
-                    "agent_name": agent_name,
-                    "name": schedule.get("name", "unnamed"),
-                    "cron": schedule["cron"],
-                    "action": schedule.get("action", ""),
-                    "mode": schedule.get("mode", "llm"),  # "llm" or "tool"
-                    "args": schedule.get("args", {}),
-                    "target_user_ids": schedule.get("target_user_ids", "all"),
-                }
-                self._cron_jobs.append(job)
-                mode_label = "tool" if job["mode"] == "tool" else "llm"
-                logger.info(f"Registered cron job: {schedule.get('name')} ({schedule['cron']}) [{mode_label}] for {agent_name}")
+        # Source 2: config.yaml user schedules
+        for schedule in settings.schedules:
+            agent_name = schedule.get("agent", "")
+            if not agent_name:
+                logger.warning(f"Skipping config schedule '{schedule.get('name', '?')}' — missing 'agent' key")
+                continue
+            self._register_job(agent_name, schedule, source="config")
+
+    def _register_job(self, agent_name: str, schedule: dict, source: str = "mission") -> None:
+        """Register a single cron job from a schedule dict."""
+        job = {
+            "agent_name": agent_name,
+            "name": schedule.get("name", "unnamed"),
+            "cron": schedule["cron"],
+            "action": schedule.get("action", ""),
+            "mode": schedule.get("mode", "llm"),  # "llm" or "tool"
+            "args": schedule.get("args", {}),
+            "target_user_ids": schedule.get("target_user_ids", "all"),
+        }
+        self._cron_jobs.append(job)
+        mode_label = "tool" if job["mode"] == "tool" else "llm"
+        logger.info(f"Registered cron job: {job['name']} ({job['cron']}) [{mode_label}] for {agent_name} [from {source}]")
 
     async def run(self) -> None:
         """Main scheduler loop — checks cron jobs and one-off jobs every tick."""

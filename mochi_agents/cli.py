@@ -56,6 +56,8 @@ Usage:
   mochi-agents config set K V   Set a configuration value
   mochi-agents agent list       List all registered agents
   mochi-agents agent info NAME  Show agent details
+  mochi-agents agent export NAME  Export an agent as a .zip bundle
+  mochi-agents agent import FILE  Import an agent from a .zip bundle
   mochi-agents reset            Reset conversation history (keeps data)
   mochi-agents reset --all      Full factory reset (deletes all data)
   mochi-agents --help           Show this help
@@ -339,7 +341,7 @@ def _config_del_key() -> None:
 def run_agent() -> None:
     """Handle `mochi-agents agent` subcommands."""
     if len(sys.argv) < 3:
-        print("Usage: mochi-agents agent <list|info>")
+        print("Usage: mochi-agents agent <list|info|export|import>")
         sys.exit(1)
 
     sub = sys.argv[2]
@@ -347,6 +349,10 @@ def run_agent() -> None:
         _agent_list()
     elif sub == "info":
         _agent_info()
+    elif sub == "export":
+        _agent_export()
+    elif sub == "import":
+        _agent_import()
     else:
         print(f"Unknown agent command: {sub}")
         sys.exit(1)
@@ -404,6 +410,267 @@ def _agent_info() -> None:
 
     print(f"🍡 Agent: {mission.get('display_name', name)}\n")
     print(yaml.dump(mission, default_flow_style=False, sort_keys=False))
+
+
+def _agent_export() -> None:
+    """Export an agent as a portable .zip bundle.
+
+    Usage: mochi-agents agent export <name> [--with-memory]
+
+    Includes:
+        - agents/<name>/  (mission.yaml, mission_prompt.md)
+        - mochi_agents/agents/<name>/  (tools code)
+        - data/shortcuts/<name>.yaml  (if exists)
+        - manifest.json  (metadata)
+        - memory_notes.json  (if --with-memory)
+    """
+    import json
+    import sqlite3
+    import zipfile
+    from datetime import datetime
+
+    if len(sys.argv) < 4:
+        print("Usage: mochi-agents agent export <name> [--with-memory]")
+        sys.exit(1)
+
+    name = sys.argv[3]
+    with_memory = "--with-memory" in sys.argv
+    project_root = _find_project_root()
+
+    # Validate agent exists
+    agent_config_dir = project_root / "agents" / name
+    agent_code_dir = project_root / "mochi_agents" / "agents" / name
+
+    if not agent_config_dir.exists():
+        print(f"  ❌ Agent config not found: agents/{name}/")
+        sys.exit(1)
+
+    mission_path = agent_config_dir / "mission.yaml"
+    if not mission_path.exists():
+        print(f"  ❌ No mission.yaml found for agent '{name}'")
+        sys.exit(1)
+
+    with open(mission_path) as f:
+        mission = yaml.safe_load(f) or {}
+
+    display_name = mission.get("display_name", name)
+
+    print()
+    print("🍡 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print(f"    Exporting Agent: {display_name}")
+    print("   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print()
+
+    # Build manifest
+    manifest = {
+        "name": name,
+        "display_name": display_name,
+        "description": mission.get("description", ""),
+        "exported_at": datetime.now().isoformat(),
+        "tools_module": mission.get("tools_module", ""),
+        "includes_memory": with_memory,
+        "includes_code": agent_code_dir.exists(),
+    }
+
+    output_file = project_root / f"{name}-agent.zip"
+
+    with zipfile.ZipFile(output_file, "w", zipfile.ZIP_DEFLATED) as zf:
+        # 1. Agent config (mission.yaml, mission_prompt.md)
+        for f in agent_config_dir.iterdir():
+            if f.is_file():
+                arcname = f"agents/{name}/{f.name}"
+                zf.write(f, arcname)
+                print(f"  📦 {arcname}")
+
+        # 2. Agent code (tools.py, __init__.py)
+        if agent_code_dir.exists():
+            for f in agent_code_dir.rglob("*"):
+                if f.is_file() and "__pycache__" not in str(f):
+                    arcname = str(f.relative_to(project_root))
+                    zf.write(f, arcname)
+                    print(f"  📦 {arcname}")
+
+        # 3. Shortcuts
+        shortcuts_file = project_root / "data" / "shortcuts" / f"{name}.yaml"
+        if shortcuts_file.exists():
+            arcname = f"data/shortcuts/{name}.yaml"
+            zf.write(shortcuts_file, arcname)
+            print(f"  📦 {arcname}")
+
+        # 4. Memory notes (optional)
+        if with_memory:
+            db_path = project_root / "data" / f"{name}.db"
+            if db_path.exists():
+                try:
+                    conn = sqlite3.connect(str(db_path))
+                    cursor = conn.cursor()
+                    tables = [r[0] for r in cursor.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()]
+
+                    if "memory_notes" in tables:
+                        rows = cursor.execute("SELECT * FROM memory_notes").fetchall()
+                        cols = [d[0] for d in cursor.description]
+                        notes = [dict(zip(cols, row)) for row in rows]
+                        if notes:
+                            zf.writestr("memory_notes.json", json.dumps(notes, indent=2, default=str))
+                            print(f"  🧠 memory_notes.json ({len(notes)} notes)")
+                    conn.close()
+                except Exception as e:
+                    print(f"  ⚠️  Could not export memory: {e}")
+
+        # 5. Manifest
+        zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+        print(f"  📝 manifest.json")
+
+    print()
+    print(f"  ✅ Exported to: {output_file}")
+    print(f"  📤 Share this file — import with: mochi-agents agent import {output_file.name}")
+    print()
+
+
+def _agent_import() -> None:
+    """Import an agent from a .zip bundle.
+
+    Usage: mochi-agents agent import <file.zip> [--with-memory]
+    """
+    import json
+    import sqlite3
+    import zipfile
+
+    if len(sys.argv) < 4:
+        print("Usage: mochi-agents agent import <file.zip> [--with-memory]")
+        sys.exit(1)
+
+    zip_path = Path(sys.argv[3])
+    import_memory = "--with-memory" in sys.argv
+
+    if not zip_path.exists():
+        print(f"  ❌ File not found: {zip_path}")
+        sys.exit(1)
+
+    project_root = _find_project_root()
+
+    # Read manifest first
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        try:
+            manifest = json.loads(zf.read("manifest.json"))
+        except KeyError:
+            print("  ❌ Invalid agent bundle: missing manifest.json")
+            sys.exit(1)
+
+        name = manifest["name"]
+        display_name = manifest.get("display_name", name)
+
+        print()
+        print("🍡 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print(f"    Importing Agent: {display_name}")
+        print("   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print()
+        print(f"  Name:        {name}")
+        print(f"  Description: {manifest.get('description', '—')[:60]}")
+        print(f"  Exported:    {manifest.get('exported_at', 'unknown')}")
+        print(f"  Has code:    {manifest.get('includes_code', False)}")
+        print(f"  Has memory:  {manifest.get('includes_memory', False)}")
+        print()
+
+        # List contents
+        print("  Contents:")
+        for info in zf.infolist():
+            if info.filename != "manifest.json":
+                print(f"    📦 {info.filename} ({info.file_size:,} bytes)")
+        print()
+
+        # Check for conflicts
+        agent_config_dir = project_root / "agents" / name
+        agent_code_dir = project_root / "mochi_agents" / "agents" / name
+
+        if agent_config_dir.exists():
+            print(f"  ⚠️  Agent '{name}' already exists at agents/{name}/")
+            overwrite = input("  Overwrite? Type 'yes' to confirm: ").strip().lower()
+            if overwrite != "yes":
+                print("  ❌ Import cancelled.")
+                return
+            print()
+
+        # Extract files
+        for info in zf.infolist():
+            if info.filename == "manifest.json":
+                continue
+            if info.filename == "memory_notes.json":
+                continue  # handle separately
+
+            target = project_root / info.filename
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(zf.read(info.filename))
+            print(f"  ✅ {info.filename}")
+
+        # Import memory notes (optional)
+        if import_memory and "memory_notes.json" in zf.namelist():
+            notes = json.loads(zf.read("memory_notes.json"))
+            if notes:
+                config = _load_yaml(project_root / "config.yaml")
+                data_dir = project_root / Path(config.get("data_dir", "./data"))
+                db_path = data_dir / f"{name}.db"
+
+                try:
+                    conn = sqlite3.connect(str(db_path))
+                    cursor = conn.cursor()
+
+                    # Create table if not exists
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS memory_notes (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            agent_name TEXT,
+                            user_id TEXT,
+                            key TEXT NOT NULL,
+                            value TEXT NOT NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+
+                    imported = 0
+                    for note in notes:
+                        cursor.execute(
+                            "INSERT INTO memory_notes (agent_name, user_id, key, value) VALUES (?, ?, ?, ?)",
+                            (note.get("agent_name", name), note.get("user_id", ""),
+                             note.get("key", ""), note.get("value", "")),
+                        )
+                        imported += 1
+
+                    conn.commit()
+                    conn.close()
+                    print(f"  🧠 Imported {imported} memory notes")
+                except Exception as e:
+                    print(f"  ⚠️  Could not import memory: {e}")
+        elif import_memory:
+            print("  ℹ️  No memory notes in bundle")
+
+    # Register agent in registry if not already there
+    registry_path = project_root / "system" / "registry.yaml"
+    if registry_path.exists():
+        with open(registry_path) as f:
+            registry = yaml.safe_load(f) or {"agents": []}
+
+        existing_names = [a["name"] for a in registry.get("agents", [])]
+        if name not in existing_names:
+            registry.setdefault("agents", []).append({
+                "name": name,
+                "display_name": display_name,
+                "description": manifest.get("description", ""),
+                "status": "active",
+            })
+            with open(registry_path, "w") as f:
+                yaml.dump(registry, f, default_flow_style=False, sort_keys=False)
+            print(f"  📝 Registered '{name}' in system/registry.yaml")
+        else:
+            print(f"  ℹ️  '{name}' already in registry")
+
+    print()
+    print("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print(f"  🍡 Import complete! Run `mochi-agents` or send /reload to activate.")
+    print()
 
 
 # ---------------------------------------------------------------------------

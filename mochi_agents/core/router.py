@@ -423,42 +423,36 @@ class Router:
             target_file = mcp_draft.with_suffix("") # Remove .draft
             shutil.move(str(mcp_draft), str(target_file))
             
-            # 3. Update agent's mission.yaml
-            mission_path = root / "agents" / target_agent / "mission.yaml"
-            if mission_path.exists():
-                import yaml as _yaml
+            # 3. Update agent's config via config.yaml overrides (not mission.yaml)
+            from mochi_agents.config import get_settings, save_agent_override
 
-                with open(mission_path, "r") as f:
-                    mission_data = _yaml.safe_load(f) or {}
+            settings = get_settings()
+            overrides = settings.agent_overrides.get(target_agent, {})
+            servers = overrides.get("mcp_servers", [{"url": "http://127.0.0.1:8001"}])
 
-                servers = mission_data.setdefault("mcp_servers", [{"url": "http://127.0.0.1:8001"}])
+            # Find the localhost 8001 server
+            server_entry = None
+            for entry in servers:
+                if isinstance(entry, str) and entry == "http://127.0.0.1:8001":
+                    idx = servers.index(entry)
+                    servers[idx] = {"url": "http://127.0.0.1:8001"}
+                    server_entry = servers[idx]
+                    break
+                elif isinstance(entry, dict) and entry.get("url") == "http://127.0.0.1:8001":
+                    server_entry = entry
+                    break
 
-                # Find the localhost 8001 server
-                server_entry = None
-                for entry in servers:
-                    if isinstance(entry, str) and entry == "http://127.0.0.1:8001":
-                        # Convert string format to dict to support whitelisting
-                        idx = servers.index(entry)
-                        servers[idx] = {"url": "http://127.0.0.1:8001"}
-                        server_entry = servers[idx]
-                        break
-                    elif isinstance(entry, dict) and entry.get("url") == "http://127.0.0.1:8001":
-                        server_entry = entry
-                        break
+            if not server_entry:
+                server_entry = {"url": "http://127.0.0.1:8001"}
+                servers.append(server_entry)
 
-                if not server_entry:
-                    server_entry = {"url": "http://127.0.0.1:8001"}
-                    servers.append(server_entry)
+            # Add tool to whitelist
+            tools_list = server_entry.setdefault("tools", [])
+            if name not in tools_list:
+                tools_list.append(name)
 
-                # Add tool to whitelist if tools list exists, if not, create it
-                tools_list = server_entry.setdefault("tools", [])
-                if name not in tools_list:
-                    tools_list.append(name)
-
-                with open(mission_path, "w") as f:
-                    _yaml.dump(mission_data, f, default_flow_style=False, sort_keys=False)
-                    
-                logger.info(f"Updated {target_agent} mission.yaml with new MCP tool {name}")
+            save_agent_override(target_agent, "mcp_servers", servers)
+            logger.info(f"Updated {target_agent} config.yaml override with new MCP tool {name}")
                 
             return await self._handle_restart()
 

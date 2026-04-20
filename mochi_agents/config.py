@@ -40,6 +40,14 @@ class Settings(BaseModel):
     dashboard_enabled: bool = True
     timezone: str = "America/Los_Angeles"  # IANA timezone for local dates
 
+    # User-specific cron schedules (separate from agent mission.yaml defaults)
+    # Each entry: {agent, name, cron, action, mode?, args?, target_user_ids?}
+    schedules: list[dict] = Field(default_factory=list)
+
+    # Runtime overrides per agent (model_config, mcp_servers, etc.)
+    # Written to config.yaml at runtime, merged on top of mission.yaml defaults.
+    agent_overrides: dict[str, dict] = Field(default_factory=dict)
+
     # Internal: project root (not from YAML)
     project_root: Path = Field(default_factory=_find_project_root)
 
@@ -137,3 +145,33 @@ def remove_api_key(name: str) -> bool:
         reload_settings()
         return True
     return False
+
+
+def save_agent_override(agent_name: str, key: str, value: Any) -> None:
+    """Persist a runtime override for an agent to config.yaml.
+
+    This keeps mission.yaml clean (committed defaults) while storing
+    user-specific changes (model_config, mcp_servers) in config.yaml.
+
+    Args:
+        agent_name: e.g., "secretary"
+        key: e.g., "model_config" or "mcp_servers"
+        value: the override value (will be deep-merged for dicts)
+    """
+    settings = get_settings()
+    config_path = settings.project_root / "config.yaml"
+
+    config_data = _load_yaml(config_path)
+    overrides = config_data.setdefault("agent_overrides", {})
+    agent_section = overrides.setdefault(agent_name, {})
+
+    # Deep-merge for dicts, replace for other types
+    if isinstance(value, dict) and isinstance(agent_section.get(key), dict):
+        agent_section[key].update(value)
+    else:
+        agent_section[key] = value
+
+    with open(config_path, "w") as f:
+        yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+
+    reload_settings()
