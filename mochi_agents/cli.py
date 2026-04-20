@@ -37,6 +37,8 @@ def main() -> None:
         run_agent()
     elif command == "reset":
         run_reset()
+    elif command == "completions":
+        run_completions()
     elif command in ("--help", "-h"):
         print_help()
     else:
@@ -63,6 +65,7 @@ Usage:
   mochi-agents reset NAME       Reset a specific agent's history
   mochi-agents reset --all      Full factory reset (deletes all data)
   mochi-agents reset NAME --all Full reset for a specific agent
+  mochi-agents completions      Print shell completion script
   mochi-agents --help           Show this help
 """)
 
@@ -1006,6 +1009,99 @@ def run_reset() -> None:
     print("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print("  🍡 Reset complete! Restart mochi-agents to start fresh.")
     print()
+
+
+# ---------------------------------------------------------------------------
+# Shell Completions
+# ---------------------------------------------------------------------------
+
+def run_completions() -> None:
+    """Print shell completion script for bash/zsh.
+
+    Usage:
+        eval "$(mochi-agents completions)"        # temporary
+        mochi-agents completions >> ~/.bashrc     # permanent (bash)
+        mochi-agents completions >> ~/.zshrc      # permanent (zsh)
+    """
+    # Dynamically discover agent names
+    project_root = _find_project_root()
+    agents_dir = project_root / "agents"
+    agent_names = []
+    if agents_dir.exists():
+        for d in sorted(agents_dir.iterdir()):
+            if (d / "mission.yaml").exists():
+                agent_names.append(d.name)
+
+    agents_str = " ".join(agent_names)
+
+    script = f'''# mochi-agents bash/zsh completion — auto-generated
+_mochi_agents_completions() {{
+    local cur prev words cword
+    if type _init_completion &>/dev/null; then
+        _init_completion || return
+    else
+        cur="${{COMP_WORDS[COMP_CWORD]}}"
+        prev="${{COMP_WORDS[COMP_CWORD-1]}}"
+        words=("${{COMP_WORDS[@]}}")
+        cword=$COMP_CWORD
+    fi
+
+    local commands="setup config agent reset completions --help"
+    local config_subs="show set set-key del-key"
+    local agent_subs="list info export import remove"
+    local agent_names="{agents_str}"
+
+    case $cword in
+        1)
+            COMPREPLY=($(compgen -W "$commands" -- "$cur"))
+            ;;
+        2)
+            case "$prev" in
+                config)
+                    COMPREPLY=($(compgen -W "$config_subs" -- "$cur"))
+                    ;;
+                agent)
+                    COMPREPLY=($(compgen -W "$agent_subs" -- "$cur"))
+                    ;;
+                reset)
+                    COMPREPLY=($(compgen -W "$agent_names --all" -- "$cur"))
+                    ;;
+            esac
+            ;;
+        3)
+            case "${{words[1]}}" in
+                agent)
+                    case "$prev" in
+                        info|export|remove)
+                            COMPREPLY=($(compgen -W "$agent_names" -- "$cur"))
+                            ;;
+                        import)
+                            COMPREPLY=($(compgen -f -X '!*.agent' -- "$cur"))
+                            ;;
+                    esac
+                    ;;
+                reset)
+                    COMPREPLY=($(compgen -W "--all" -- "$cur"))
+                    ;;
+            esac
+            ;;
+        4)
+            case "${{words[1]}}" in
+                agent)
+                    case "${{words[2]}}" in
+                        export|import)
+                            COMPREPLY=($(compgen -W "--with-memory" -- "$cur"))
+                            ;;
+                    esac
+                    ;;
+            esac
+            ;;
+    esac
+}}
+
+complete -F _mochi_agents_completions mochi-agents
+'''
+    print(script)
 
 
 # ---------------------------------------------------------------------------
