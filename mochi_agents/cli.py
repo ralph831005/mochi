@@ -58,8 +58,10 @@ Usage:
   mochi-agents agent info NAME  Show agent details
   mochi-agents agent export NAME  Export an agent as a .zip bundle
   mochi-agents agent import FILE  Import an agent from a .zip bundle
-  mochi-agents reset            Reset conversation history (keeps data)
+  mochi-agents reset            Reset all agents' conversation history
+  mochi-agents reset NAME       Reset a specific agent's history
   mochi-agents reset --all      Full factory reset (deletes all data)
+  mochi-agents reset NAME --all Full reset for a specific agent
   mochi-agents --help           Show this help
 """)
 
@@ -681,12 +683,21 @@ def run_reset() -> None:
     """Reset agent data with interactive confirmation.
 
     Modes:
-        mochi-agents reset          Clear conversation history only
-        mochi-agents reset --all    Delete all data (full factory reset)
+        mochi-agents reset                Clear ALL agents' conversation history
+        mochi-agents reset <agent>        Clear a specific agent's history
+        mochi-agents reset --all          Full factory reset (all data)
+        mochi-agents reset <agent> --all  Full reset for a specific agent
     """
     import sqlite3
 
     full_reset = "--all" in sys.argv
+    # Check for agent name argument (skip flags)
+    agent_filter = None
+    for arg in sys.argv[2:]:
+        if not arg.startswith("--"):
+            agent_filter = arg
+            break
+
     project_root = _find_project_root()
     config = _load_yaml(project_root / "config.yaml")
     data_dir = project_root / Path(config.get("data_dir", "./data"))
@@ -696,7 +707,16 @@ def run_reset() -> None:
         return
 
     # Discover what we'll delete
-    db_files = sorted(data_dir.glob("*.db"))
+    if agent_filter:
+        target = data_dir / f"{agent_filter}.db"
+        if not target.exists():
+            print(f"  ❌ No database found for agent '{agent_filter}'")
+            print(f"  Available: {', '.join(f.stem for f in sorted(data_dir.glob('*.db')))}")
+            sys.exit(1)
+        db_files = [target]
+    else:
+        db_files = sorted(data_dir.glob("*.db"))
+
     if not db_files:
         print("  No database files found. Nothing to reset.")
         return
@@ -704,9 +724,10 @@ def run_reset() -> None:
     print()
     print("🍡 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     if full_reset:
-        print("     Full Factory Reset")
+        title = f"Full Reset: {agent_filter}" if agent_filter else "Full Factory Reset"
     else:
-        print("     Reset Conversation History")
+        title = f"Reset: {agent_filter}" if agent_filter else "Reset Conversation History"
+    print(f"     {title}")
     print("   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print()
 
