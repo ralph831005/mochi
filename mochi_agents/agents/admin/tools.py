@@ -65,7 +65,116 @@ def get_tools() -> list:
         trigger_restart,
         add_alias,
         remove_alias,
+        toggle_search,
+        toggle_thinking,
     ]
+
+
+async def toggle_search(
+    agent_name: str,
+    enabled: bool,
+) -> dict[str, Any]:
+    """Enable or disable Google Search grounding for an agent.
+
+    When enabled, the agent can search the web for up-to-date information.
+    Changes take effect after /reload.
+
+    Args:
+        agent_name: The agent's internal name. Example: "nutritionist"
+        enabled: True to enable search, False to disable.
+    """
+    from mochi_agents.config import reload_settings
+
+    settings = get_settings()
+    config_path = settings.project_root / "config.yaml"
+
+    config_data = {}
+    if config_path.exists():
+        with open(config_path) as f:
+            config_data = yaml.safe_load(f) or {}
+
+    grounding = config_data.setdefault("google_search_grounding", {})
+    exclude = grounding.setdefault("exclude_agents", [])
+
+    if enabled and agent_name in exclude:
+        exclude.remove(agent_name)
+        action = "enabled"
+    elif not enabled and agent_name not in exclude:
+        exclude.append(agent_name)
+        action = "disabled"
+    else:
+        state = "enabled" if agent_name not in exclude else "disabled"
+        return {"status": "no_change", "message": f"Search is already {state} for {agent_name}"}
+
+    with open(config_path, "w") as f:
+        yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+
+    reload_settings()
+    logger.info(f"Admin {action} search for '{agent_name}'")
+
+    return {
+        "status": action,
+        "agent": agent_name,
+        "message": f"Search {action} for {agent_name}. Send /reload to apply.",
+    }
+
+
+async def toggle_thinking(
+    agent_name: str,
+    level: str,
+) -> dict[str, Any]:
+    """Set the thinking/reasoning level for an agent.
+
+    Higher levels produce deeper reasoning but increase latency.
+    Changes take effect after /reload.
+
+    Args:
+        agent_name: The agent's internal name. Example: "learner"
+        level: Thinking level — "off", "minimal", "low", "medium", or "high".
+    """
+    from mochi_agents.config import reload_settings
+
+    valid_levels = {"off", "minimal", "low", "medium", "high"}
+    level = level.lower().strip()
+    if level not in valid_levels:
+        return {"status": "error", "message": f"Invalid level '{level}'. Use: {', '.join(sorted(valid_levels))}"}
+
+    settings = get_settings()
+    config_path = settings.project_root / "config.yaml"
+
+    config_data = {}
+    if config_path.exists():
+        with open(config_path) as f:
+            config_data = yaml.safe_load(f) or {}
+
+    thinking = config_data.setdefault("thinking", {})
+    agents_map = thinking.setdefault("agents", {})
+
+    if level == "off":
+        if agent_name in agents_map:
+            del agents_map[agent_name]
+            action = "disabled"
+        else:
+            return {"status": "no_change", "message": f"Thinking is already off for {agent_name}"}
+    else:
+        old_level = agents_map.get(agent_name)
+        if old_level == level:
+            return {"status": "no_change", "message": f"Thinking is already '{level}' for {agent_name}"}
+        agents_map[agent_name] = level
+        action = f"set to '{level}'"
+
+    with open(config_path, "w") as f:
+        yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+
+    reload_settings()
+    logger.info(f"Admin {action} thinking for '{agent_name}'")
+
+    return {
+        "status": "updated",
+        "agent": agent_name,
+        "level": level,
+        "message": f"Thinking {action} for {agent_name}. Send /reload to apply.",
+    }
 
 
 async def add_alias(

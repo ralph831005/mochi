@@ -48,6 +48,18 @@ class Settings(BaseModel):
     # Written to config.yaml at runtime, merged on top of mission.yaml defaults.
     agent_overrides: dict[str, dict] = Field(default_factory=dict)
 
+    # Google Search grounding — agents not in exclude list get grounding
+    # {exclude_agents: ["manager"]}
+    google_search_grounding: dict = Field(default_factory=dict)
+
+    # URL Context — agents not in exclude list can read web page content
+    # {exclude_agents: ["manager"]}
+    url_context: dict = Field(default_factory=dict)
+
+    # Thinking — per-agent thinking level for deep reasoning
+    # {agents: {learner: "medium", admin: "low"}}
+    thinking: dict = Field(default_factory=dict)
+
     # Internal: project root (not from YAML)
     project_root: Path = Field(default_factory=_find_project_root)
 

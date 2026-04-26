@@ -451,13 +451,13 @@ class AgentRuntime:
         We pass schemas instead of callables so the SDK doesn't try
         to auto-call them (which fails with async functions).
         We handle tool execution manually via the ToolRunner.
+
+        Also injects Google Search grounding for eligible agents.
         """
         declarations = self.tool_runner.get_tool_declarations(agent_name)
-        if not declarations:
-            return None
 
         func_declarations = []
-        for decl in declarations:
+        for decl in (declarations or []):
             # Build parameter schema from type hints
             properties = {}
             required = []
@@ -487,7 +487,18 @@ class AgentRuntime:
                 )
             )
 
-        return [types.Tool(function_declarations=func_declarations)]
+        tools = []
+        if func_declarations:
+            tools.append(types.Tool(function_declarations=func_declarations))
+
+        # Add Google Search grounding for eligible agents
+        settings = get_settings()
+        grounding_cfg = settings.google_search_grounding
+        exclude_agents = grounding_cfg.get("exclude_agents", [])
+        if grounding_cfg and agent_name not in exclude_agents:
+            tools.append(types.Tool(google_search=types.GoogleSearch()))
+
+        return tools if tools else None
 
     @staticmethod
     def _python_type_to_schema(hint: Any) -> dict:
@@ -504,6 +515,68 @@ class AgentRuntime:
                 return {"type": schema_type}
         return {"type": "STRING"}
 
+    async def _extract_url_context(
+        self,
+        agent_name: str,
+        user_message: str,
+        model_config: dict,
+    ) -> str | None:
+        """Extract content from URLs in the user message via Gemini's URL Context tool.
+
+        Makes a separate API call with the url_context tool (which is incompatible
+        with function calling), then returns a text summary for the main agent call.
+
+        Returns None if no URLs found, agent is excluded, or extraction fails.
+        """
+        import re as _re
+
+        # Check if agent has URL context enabled
+        settings = get_settings()
+        url_cfg = settings.url_context
+        exclude_agents = url_cfg.get("exclude_agents", [])
+        if not url_cfg or agent_name in exclude_agents:
+            return None
+
+        # Detect URLs in the message
+        url_pattern = _re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+')
+        urls = url_pattern.findall(user_message)
+        if not urls:
+            return None
+
+        logger.info(f"URL Context: extracting content from {len(urls)} URL(s) for '{agent_name}'")
+
+        try:
+            client = create_client(model_config)
+            model_name = get_model_name(model_config)
+
+            # Build a prompt asking the model to summarize the URL content
+            url_list = "\n".join(f"- {url}" for url in urls[:5])  # cap at 5 URLs
+            prompt = (
+                f"Read and summarize the content from the following URL(s). "
+                f"Extract the key information that would be useful for the user's request.\n\n"
+                f"{url_list}"
+            )
+
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(url_context=types.UrlContext())],
+                    temperature=0.1,
+                    max_output_tokens=2048,
+                ),
+            )
+
+            summary = response.text
+            if summary:
+                logger.info(f"URL Context: extracted {len(summary)} chars from {len(urls)} URL(s)")
+                return summary
+
+        except Exception as e:
+            logger.warning(f"URL Context: extraction failed for '{agent_name}': {e}")
+
+        return None
+
     async def execute(
         self,
         agent_name: str,
@@ -512,8 +585,15 @@ class AgentRuntime:
         user_id: str = "",
         source: str = "user",
         _delegation_depth: int = 0,
+        response_schema: Any = None,
     ) -> str:
-        """Execute an agent with a user message. Returns the final response text."""
+        """Execute an agent with a user message. Returns the final response text.
+
+        Args:
+            response_schema: Optional Pydantic model class for structured JSON output.
+                When set, the model returns guaranteed JSON matching the schema.
+                Tool calling is disabled in structured output mode.
+        """
         # Set context for shared tools (delegation, memory)
         from mochi_agents.core.shared_tools import set_current_runtime, set_current_depth
         set_current_runtime(self)
@@ -538,10 +618,17 @@ class AgentRuntime:
                     )
                 )
 
+        # URL Context pre-processing: extract web page content if URLs detected
+        enriched_message = user_message
+        if not response_schema:  # skip for structured-output calls (e.g. Manager routing)
+            url_summary = await self._extract_url_context(agent_name, user_message, model_config)
+            if url_summary:
+                enriched_message = f"{user_message}\n\n---\n📄 **Content from linked URLs:**\n{url_summary}"
+
         contents.append(
             types.Content(
                 role="user",
-                parts=[types.Part.from_text(text=user_message)],
+                parts=[types.Part.from_text(text=enriched_message)],
             )
         )
 
@@ -562,21 +649,44 @@ class AgentRuntime:
             system_instruction=system_instruction,
             temperature=gen_config.temperature,
             max_output_tokens=gen_config.max_output_tokens,
-            tools=tool_declarations,
+            tools=tool_declarations if not response_schema else None,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
 
+        # Structured output mode: force JSON response matching schema
+        if response_schema:
+            config.response_mime_type = "application/json"
+            config.response_schema = response_schema
+
+        # Thinking mode: enable deep reasoning for specific agents
+        settings = get_settings()
+        thinking_agents = settings.thinking.get("agents", {})
+        thinking_level = thinking_agents.get(agent_name)
+        if thinking_level:
+            config.thinking_config = types.ThinkingConfig(
+                thinking_level=thinking_level,
+            )
+            logger.info(f"Agent '{agent_name}': thinking enabled (level={thinking_level})")
+
         logger.info(f"Executing agent '{agent_name}' with model '{model_name}'{' (stateless)' if is_stateless else ''}")
 
-        response = await self._generate_with_retry(
-            client, model_name, contents, config=config,
-        )
+        try:
+            response = await self._generate_with_retry(
+                client, model_name, contents, config=config,
+            )
 
-        # Handle tool calls in the response
-        response_text = await self._handle_response(
-            agent_name, response, client, model_name, contents, config,
-            user_id=user_id,
-        )
+            # Handle tool calls in the response
+            response_text = await self._handle_response(
+                agent_name, response, client, model_name, contents, config,
+                user_id=user_id,
+            )
+        except Exception as e:
+            # All retries exhausted — save error marker so memory stays consistent
+            error_msg = f"⚠️ API error — message not processed: {type(e).__name__}"
+            logger.error(f"Agent '{agent_name}' failed after retries: {e}")
+            if not is_stateless:
+                await self._save_message(agent_name, "assistant", error_msg, source="system")
+            raise
 
         # Save assistant response to memory (skip for stateless agents)
         if not is_stateless:

@@ -332,8 +332,8 @@ class MochiBot:
             if not mission_path.exists():
                 continue
 
-            with open(mission_path) as f:
-                mission = yaml.safe_load(f) or {}
+            # Use agent_runtime's merged mission (mission.yaml + config overrides)
+            mission = self.runtime.load_mission(agent.name)
 
             tools_module = mission.get("tools_module")
             if tools_module:

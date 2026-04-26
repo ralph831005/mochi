@@ -257,6 +257,12 @@ class Router:
 
     async def _delegate_to_manager(self, text: str, user_id: str = "") -> str:
         """Use the Manager agent to determine routing, then execute the chosen agent."""
+        from pydantic import BaseModel, Field
+
+        class RoutingDecision(BaseModel):
+            route_to: str = Field(description="Agent name to route to, or 'none' if no agent can handle it")
+            reason: str = Field(description="Brief explanation of routing choice")
+
         # Give the Manager the registry summary as context
         registry_summary = self.registry.get_registry_summary()
         workflow_summary = self.workflow_engine.get_workflow_summary() if self.workflow_engine else ""
@@ -269,12 +275,20 @@ class Router:
             text,
             extra_context=extra_context,
             user_id=user_id,
+            response_schema=RoutingDecision,
         )
 
-        # Try to parse routing decision from Manager's response
-        route_to = self._parse_routing_decision(manager_response)
+        # Parse the structured JSON response
+        route_to = None
+        try:
+            data = json.loads(manager_response)
+            route_to = data.get("route_to", "").lower().strip()
+            reason = data.get("reason", "")
+            logger.info(f"Manager routing decision: {route_to} — {reason}")
+        except (json.JSONDecodeError, ValueError):
+            logger.warning(f"Manager returned non-JSON: {manager_response[:100]}")
 
-        if route_to and route_to != "manager":
+        if route_to and route_to not in ("manager", "none", ""):
             # Check if it's a workflow
             if self.workflow_engine and self.workflow_engine.get_workflow(route_to):
                 logger.info(f"Manager routed → workflow '{route_to}'")
@@ -287,7 +301,7 @@ class Router:
                 return await self.runtime.execute(agent.name, text, user_id=user_id)
 
         # If Manager says no agent can handle it, delegate to Learner
-        if route_to == "none" or "no agent" in manager_response.lower() or "doesn't exist" in manager_response.lower():
+        if route_to == "none":
             learner = self.registry.get_agent("learner")
             if learner:
                 logger.info("No agent found — delegating to Learner")
@@ -295,20 +309,6 @@ class Router:
 
         # Manager handled it directly (conversational — no session started)
         return manager_response
-
-    def _parse_routing_decision(self, response: str) -> str | None:
-        """Try to extract a route_to decision from the Manager's response."""
-        # Look for JSON block in the response
-        try:
-            # Try to find JSON in the response
-            start = response.find("{")
-            end = response.rfind("}") + 1
-            if start >= 0 and end > start:
-                data = json.loads(response[start:end])
-                return data.get("route_to")
-        except (json.JSONDecodeError, ValueError):
-            pass
-        return None
 
     async def _handle_reload(self) -> str:
         """Handle the /reload system command."""
