@@ -5,16 +5,25 @@ A modular, multi-agent bot that routes tasks to domain-specific specialist agent
 ## Quick Start
 
 ```bash
-# Install in editable mode
+curl -sSL https://raw.githubusercontent.com/ralph831005/mochi/main/install.sh | bash
+```
+
+This will clone, create a virtualenv (pyenv or venv), install dependencies, and run the setup wizard.
+
+### Optional Agents
+
+```bash
+mochi-agents agent install nutritionist   # diet tracking
+```
+
+### Manual Install
+
+```bash
+git clone https://github.com/ralph831005/mochi.git ~/.mochi
+cd ~/.mochi
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
-
-# Interactive setup (tokens, config)
 mochi-agents setup
-
-# Enable tab completion (optional)
-eval "$(mochi-agents completions)"
-
-# Run the bot
 mochi-agents
 ```
 
@@ -45,6 +54,7 @@ mochi-agents completions >> ~/.zshrc && source ~/.zshrc
 | `mochi-agents agent info NAME` | Show agent details |
 | `mochi-agents agent export NAME` | Export agent as `.agent` bundle |
 | `mochi-agents agent import FILE` | Import agent from `.agent` bundle |
+| `mochi-agents agent install NAME` | Download & import from marketplace |
 | `mochi-agents agent remove NAME` | Remove an agent (with confirmation) |
 | `mochi-agents reset` | Clear all agents' conversation history |
 | `mochi-agents reset NAME` | Clear a specific agent's history |
