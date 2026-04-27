@@ -7,30 +7,6 @@ agents:
     routing_keys: []
     status: active
 
-  - name: nutritionist
-    display_name: "Noa"
-    description: "Manages daily diet tracking, macro estimation, and dietary suggestions."
-    routing_keys:
-      - nutrition
-      - diet
-      - food
-      - meal
-      - calories
-      - macros
-      - breakfast
-      - lunch
-      - dinner
-      - snack
-      - eat
-      - ate
-      - protein
-      - carbs
-      - fat
-      - vitamin
-      - water
-      - drink
-    status: active
-
   - name: admin
     display_name: "Anna"
     description: "Creates and manages agents, tools, and system config via chat."

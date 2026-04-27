@@ -8,6 +8,12 @@ from __future__ import annotations
 
 from typing import Any
 
+import logging
+import urllib.request
+import json as _json
+
+logger = logging.getLogger(__name__)
+
 from mochi_agents.core.location import get_tracker
 from mochi_agents.core.shared_tools import _current_agent
 
@@ -51,6 +57,92 @@ async def set_zone(
     """
     tracker = get_tracker()
     return await tracker.add_geofence(user_id, name, latitude, longitude, radius_m)
+
+
+async def geocode_address(address: str) -> dict[str, Any]:
+    """Convert a street address or place name to latitude/longitude coordinates.
+
+    Call this when the user mentions a location by address or place name
+    instead of raw coordinates. Use the returned lat/lng with set_zone.
+
+    Args:
+        address: A street address or place name.
+            Example: "1600 Amphitheatre Parkway, Mountain View, CA"
+            Example: "Costco Sunnyvale"
+    """
+    try:
+        encoded = urllib.request.quote(address)
+        url = (
+            f"https://nominatim.openstreetmap.org/search?"
+            f"q={encoded}&format=json&limit=1&addressdetails=1"
+        )
+        req = urllib.request.Request(url, headers={"User-Agent": "MochiAgent/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read().decode())
+
+        if not data:
+            return {
+                "status": "not_found",
+                "message": f"Could not find coordinates for '{address}'. Try a more specific address.",
+            }
+
+        result = data[0]
+        lat = float(result["lat"])
+        lon = float(result["lon"])
+        display = result.get("display_name", address)
+
+        logger.info(f"Geocoded '{address}' → ({lat}, {lon})")
+
+        return {
+            "status": "ok",
+            "latitude": lat,
+            "longitude": lon,
+            "display_name": display,
+            "message": f"Found: {display} ({lat:.5f}, {lon:.5f}). Use set_zone to create a geofence here.",
+        }
+    except Exception as e:
+        logger.warning(f"Geocoding failed for '{address}': {e}")
+        return {"status": "error", "message": f"Geocoding failed: {e}"}
+
+
+async def set_zone_from_address(
+    name: str,
+    address: str,
+    radius_m: float = 150.0,
+    user_id: str = "",
+) -> dict[str, Any]:
+    """Create a geofence zone from a street address or place name.
+
+    This combines geocoding and zone creation in one step.
+    Prefer this over separate geocode_address + set_zone calls.
+
+    Args:
+        name: Human-friendly zone name (e.g., "costco", "dentist").
+        address: Street address or place name to geocode.
+            Example: "1600 Amphitheatre Parkway, Mountain View, CA"
+        radius_m: Radius in metres (default 150).
+        user_id: Owner user ID (auto-injected by the runtime).
+    """
+    geo_result = await geocode_address(address)
+
+    if geo_result.get("status") != "ok":
+        return geo_result
+
+    lat = geo_result["latitude"]
+    lon = geo_result["longitude"]
+    display = geo_result["display_name"]
+
+    tracker = get_tracker()
+    zone_result = await tracker.add_geofence(user_id, name, lat, lon, radius_m)
+
+    return {
+        "status": "ok",
+        "zone": name,
+        "latitude": lat,
+        "longitude": lon,
+        "display_name": display,
+        "message": f"Zone '{name}' created at {display} ({lat:.5f}, {lon:.5f}), radius {radius_m}m.",
+    }
 
 
 async def set_zone_here(
@@ -224,6 +316,8 @@ def get_tools() -> list:
         # Location / geofence
         set_zone,
         set_zone_here,
+        set_zone_from_address,
+        geocode_address,
         remove_zone,
         list_zones,
         add_reminder,

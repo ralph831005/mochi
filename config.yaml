@@ -4,8 +4,8 @@
 active_client: telegram
 
 # Telegram user IDs allowed to interact with the bot
-allowed_user_ids:
-  - 8429093155
+# Add your IDs in user_config.yaml, NOT here!
+allowed_user_ids: []
 
 # File paths (relative to project root)
 data_dir: ./data
@@ -28,6 +28,4 @@ url_context:
 # Levels: minimal, low, medium, high (higher = deeper reasoning, more latency)
 # Only listed agents get thinking; unlisted agents use default (no thinking)
 thinking:
-  agents:
-    learner: high
-    admin: high
+  agents: {}

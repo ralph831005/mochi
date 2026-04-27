@@ -57,13 +57,20 @@ class AgentRuntime:
         """Load and cache an agent's mission.yaml, merged with config.yaml overrides."""
         settings = get_settings()
         agents_dir = settings.resolve_path(settings.agents_dir)
+        custom_agents_dir = settings.resolve_path(settings.custom_agents_dir)
+
+        # Search primary agents dir first, then custom_agents dir
         mission_path = agents_dir / agent_name / "mission.yaml"
+        if not mission_path.exists():
+            mission_path = custom_agents_dir / agent_name / "mission.yaml"
 
         with open(mission_path) as f:
             mission = yaml.safe_load(f) or {}
 
-        # Load mission_prompt.md if it exists
+        # Load mission_prompt.md if it exists (check both dirs)
         prompt_path = agents_dir / agent_name / "mission_prompt.md"
+        if not prompt_path.exists():
+            prompt_path = custom_agents_dir / agent_name / "mission_prompt.md"
         if prompt_path.exists():
             mission["mission_prompt"] = prompt_path.read_text()
 

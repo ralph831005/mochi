@@ -12,6 +12,12 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+CUSTOM_TOOL_API_VERSION = "1.0"
+
 
 @dataclass
 class ToolDeclaration:
@@ -96,11 +102,32 @@ class ImportlibToolRunner:
             return
 
         module = importlib.import_module(module_path)
-        if not hasattr(module, "get_tools"):
+        tools = module.get_tools() if hasattr(module, "get_tools") else []
+
+        # Attempt to load custom user tools for this agent
+        if module_path.endswith(".tools"):
+            custom_module_path = module_path[:-6] + ".custom_tools"
+            try:
+                custom_module = importlib.import_module(custom_module_path)
+                
+                # Check version compatibility
+                tool_version = getattr(custom_module, "API_VERSION", None)
+                if tool_version is None:
+                    logger.warning(f"⚠️ Custom tools for '{agent_name}' are missing API_VERSION. Skipping load for safety.")
+                elif tool_version != CUSTOM_TOOL_API_VERSION:
+                    logger.warning(
+                        f"⚠️ Custom tools for '{agent_name}' use API v{tool_version}, "
+                        f"but Mochi expects v{CUSTOM_TOOL_API_VERSION}. Skipping load."
+                    )
+                elif hasattr(custom_module, "get_tools"):
+                    tools.extend(custom_module.get_tools())
+            except ImportError:
+                pass
+
+        if not tools:
             self._cache[agent_name] = {}
             return
 
-        tools = module.get_tools()
         declarations: dict[str, ToolDeclaration] = {}
 
         for tool_fn in tools:

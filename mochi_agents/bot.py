@@ -71,7 +71,8 @@ class MochiBot:
 
         # Load aliases from mission files
         agents_dir = self.settings.resolve_path(self.settings.agents_dir)
-        self.registry.load_aliases_from_missions(agents_dir)
+        custom_agents_dir = self.settings.resolve_path(self.settings.custom_agents_dir)
+        self.registry.load_aliases_from_missions(agents_dir, custom_agents_dir)
 
         # Initialize databases for all registered agents
         data_dir = self.settings.resolve_path(self.settings.data_dir)

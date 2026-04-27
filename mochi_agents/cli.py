@@ -60,6 +60,7 @@ Usage:
   mochi-agents agent info NAME    Show agent details
   mochi-agents agent export NAME  Export an agent as a .agent bundle
   mochi-agents agent import FILE  Import an agent from a .agent bundle
+  mochi-agents agent install NAME Download & import from marketplace
   mochi-agents agent remove NAME  Remove an agent (with confirmation)
   mochi-agents reset            Reset all agents' conversation history
   mochi-agents reset NAME       Reset a specific agent's history
@@ -347,7 +348,7 @@ def _config_del_key() -> None:
 def run_agent() -> None:
     """Handle `mochi-agents agent` subcommands."""
     if len(sys.argv) < 3:
-        print("Usage: mochi-agents agent <list|info|export|import|remove>")
+        print("Usage: mochi-agents agent <list|info|export|import|install|remove>")
         sys.exit(1)
 
     sub = sys.argv[2]
@@ -359,6 +360,8 @@ def run_agent() -> None:
         _agent_export()
     elif sub == "import":
         _agent_import()
+    elif sub == "install":
+        _agent_install()
     elif sub == "remove":
         _agent_remove()
     else:
@@ -605,6 +608,7 @@ def _agent_export() -> None:
         "name": name,
         "display_name": display_name,
         "description": mission.get("description", ""),
+        "version": mission.get("version", "1.0.0"),
         "exported_at": datetime.now().isoformat(),
         "tools_module": mission.get("tools_module", ""),
         "includes_memory": with_memory,
@@ -724,12 +728,15 @@ def _agent_import() -> None:
         name = manifest["name"]
         display_name = manifest.get("display_name", name)
 
+        new_version = manifest.get("version", "1.0.0")
+
         print()
         print("🍡 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print(f"    Importing Agent: {display_name}")
         print("   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print()
         print(f"  Name:        {name}")
+        print(f"  Version:     {new_version}")
         print(f"  Description: {manifest.get('description', '—')[:60]}")
         print(f"  Exported:    {manifest.get('exported_at', 'unknown')}")
         print(f"  Has code:    {manifest.get('includes_code', False)}")
@@ -744,19 +751,35 @@ def _agent_import() -> None:
                 print(f"    📦 {info.filename} ({info.file_size:,} bytes)")
         print()
 
-        # Check for conflicts
-        agent_config_dir = project_root / "agents" / name
+        # Check for conflicts — search both agents/ and custom_agents/
+        agent_config_dir = project_root / "custom_agents" / name
+        legacy_config_dir = project_root / "agents" / name
         agent_code_dir = project_root / "mochi_agents" / "agents" / name
 
+        existing_dir = None
         if agent_config_dir.exists():
-            print(f"  ⚠️  Agent '{name}' already exists at agents/{name}/")
-            overwrite = input("  Overwrite? Type 'yes' to confirm: ").strip().lower()
+            existing_dir = agent_config_dir
+        elif legacy_config_dir.exists():
+            existing_dir = legacy_config_dir
+
+        if existing_dir:
+            # Check installed version
+            installed_mission = existing_dir / "mission.yaml"
+            old_version = "unknown"
+            if installed_mission.exists():
+                with open(installed_mission) as mf:
+                    old_mission = yaml.safe_load(mf) or {}
+                old_version = old_mission.get("version", "unknown")
+
+            print(f"  ⚠️  Agent '{name}' already installed (v{old_version} → v{new_version})")
+            print(f"  ℹ️  Your custom_tools.py and memories will be preserved.")
+            overwrite = input("  Update? Type 'yes' to confirm: ").strip().lower()
             if overwrite != "yes":
                 print("  ❌ Import cancelled.")
                 return
             print()
 
-        # Extract files
+        # Extract files — redirect agent configs to custom_agents/
         for info in zf.infolist():
             if info.filename == "manifest.json":
                 continue
@@ -764,11 +787,18 @@ def _agent_import() -> None:
                 continue  # handle separately
             if info.filename == "mcp_servers.json":
                 continue  # handle separately
+            if info.filename == "registry_entry.json":
+                continue  # handle separately
 
-            target = project_root / info.filename
+            dest_filename = info.filename
+            # Redirect agents/{name}/ → custom_agents/{name}/
+            if dest_filename.startswith(f"agents/{name}/"):
+                dest_filename = f"custom_agents/{name}/" + dest_filename[len(f"agents/{name}/"):]
+
+            target = project_root / dest_filename
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(zf.read(info.filename))
-            print(f"  ✅ {info.filename}")
+            print(f"  ✅ {dest_filename}")
 
         # Import memory notes (optional)
         if import_memory and "memory_notes.json" in zf.namelist():
@@ -824,30 +854,127 @@ def _agent_import() -> None:
                 yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
             print(f"  🔌 Imported MCP config into config.yaml")
 
-    # Register agent in registry if not already there
-    registry_path = project_root / "system" / "registry.yaml"
-    if registry_path.exists():
-        with open(registry_path) as f:
-            registry = yaml.safe_load(f) or {"agents": []}
+    # Register agent in user_registry.yaml (not system registry)
+    user_registry_path = project_root / "system" / "user_registry.yaml"
+    system_registry_path = project_root / "system" / "registry.yaml"
 
-        existing_names = [a["name"] for a in registry.get("agents", [])]
-        if name not in existing_names:
-            registry.setdefault("agents", []).append({
-                "name": name,
-                "display_name": display_name,
-                "description": manifest.get("description", ""),
-                "status": "active",
-            })
-            with open(registry_path, "w") as f:
-                yaml.dump(registry, f, default_flow_style=False, sort_keys=False)
-            print(f"  📝 Registered '{name}' in system/registry.yaml")
-        else:
-            print(f"  ℹ️  '{name}' already in registry")
+    # Check both registries
+    all_names = []
+    if system_registry_path.exists():
+        with open(system_registry_path) as f:
+            sys_data = yaml.safe_load(f) or {}
+        all_names.extend(a["name"] for a in sys_data.get("agents", []))
+
+    user_data = {"agents": []}
+    if user_registry_path.exists():
+        with open(user_registry_path) as f:
+            user_data = yaml.safe_load(f) or {"agents": []}
+    all_names.extend(a["name"] for a in user_data.get("agents", []))
+
+    if name not in all_names:
+        # Try to read registry_entry.json from the archive for routing_keys
+        import json as _json
+        entry = {
+            "name": name,
+            "display_name": display_name,
+            "description": manifest.get("description", ""),
+            "routing_keys": [],
+            "status": "active",
+        }
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf2:
+                if "registry_entry.json" in zf2.namelist():
+                    entry = _json.loads(zf2.read("registry_entry.json"))
+        except Exception:
+            pass
+
+        user_data.setdefault("agents", []).append(entry)
+        with open(user_registry_path, "w") as f:
+            yaml.dump(user_data, f, default_flow_style=False, sort_keys=False)
+        print(f"  📝 Registered '{name}' in system/user_registry.yaml")
+    else:
+        print(f"  ℹ️  '{name}' already in registry")
 
     print()
     print("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print(f"  🍡 Import complete! Run `mochi-agents` or send /reload to activate.")
     print()
+
+
+# ---------------------------------------------------------------------------
+# Marketplace Install
+# ---------------------------------------------------------------------------
+
+DEFAULT_MARKETPLACE_URL = "https://github.com/ralph831005/mochi-marketplace/raw/main/agents"
+
+
+def _agent_install() -> None:
+    """Download and import an agent from the marketplace.
+
+    Usage: mochi-agents agent install <name>
+
+    Downloads <name>.agent from the marketplace repo, then runs the import flow.
+    """
+    import tempfile
+    import urllib.request
+
+    if len(sys.argv) < 4:
+        print("Usage: mochi-agents agent install <name>")
+        sys.exit(1)
+
+    name = sys.argv[3]
+    project_root = _find_project_root()
+
+    # Get marketplace URL from config or use default
+    config = _load_yaml(project_root / "config.yaml")
+    user_config_path = project_root / "user_config.yaml"
+    if user_config_path.exists():
+        user_cfg = _load_yaml(user_config_path)
+        config.update(user_cfg)
+    marketplace_url = config.get("marketplace_url", DEFAULT_MARKETPLACE_URL)
+
+    url = f"{marketplace_url}/{name}.agent"
+
+    print()
+    print("🍡 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print(f"    Installing Agent: {name}")
+    print("   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print()
+    print(f"  📥 Downloading from: {url}")
+    print()
+
+    # Download to a temporary file within the workspace
+    tmp_dir = project_root / ".tmp"
+    tmp_dir.mkdir(exist_ok=True)
+    tmp_path = tmp_dir / f"{name}.agent"
+
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "MochiAgent/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            tmp_path.write_bytes(resp.read())
+        print(f"  ✅ Downloaded {tmp_path.stat().st_size:,} bytes")
+        print()
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            print(f"  ❌ Agent '{name}' not found in marketplace.")
+            print(f"     URL: {url}")
+        else:
+            print(f"  ❌ Download failed: HTTP {e.code}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"  ❌ Download failed: {e}")
+        sys.exit(1)
+
+    # Inject the downloaded file path and call import
+    sys.argv = ["mochi-agents", "agent", "import", str(tmp_path)]
+    _agent_import()
+
+    # Clean up
+    try:
+        tmp_path.unlink()
+        tmp_dir.rmdir()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
