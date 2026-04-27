@@ -6,6 +6,8 @@
     <title>🍡 Mochi Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
         :root {
             --bg-primary: #0f0f13;
@@ -789,6 +791,9 @@
                 <div class="nav-item" data-page="chat">
                     <span class="icon">💬</span><span>Chat</span>
                 </div>
+                <div class="nav-item" data-page="zones">
+                    <span class="icon">🗺️</span><span>Zones</span>
+                </div>
             </nav>
         </aside>
 
@@ -886,6 +891,15 @@
                 <div class="filter-bar" id="bookkeeping-filters"></div>
                 <div id="bookkeeping-content"></div>
             </div>
+
+            <!-- Zones map page -->
+            <div id="page-zones" class="page">
+                <h1 class="page-title">Geofence Zones</h1>
+                <p class="page-subtitle">Your registered location zones and reminders</p>
+                <div class="stat-grid" id="zones-stats"></div>
+                <div id="zones-map" style="height: 500px; border-radius: var(--radius); border: 1px solid var(--border); margin-top: 16px;"></div>
+                <div id="zones-list" style="margin-top: 16px;"></div>
+            </div>
         </main>
     </div>
 
@@ -943,6 +957,7 @@
             case 'config': return loadConfig();
             case 'bookkeeping': return loadBookkeeping();
             case 'chat': return initChat();
+            case 'zones': return loadZones();
         }
     }
 
@@ -1998,6 +2013,141 @@
         `;
     }
 
+    // ---------------------------------------------------------------------------
+    // Zones Map
+    // ---------------------------------------------------------------------------
+    let zonesMap = null;
+    let zonesLayer = null;
+
+    async function loadZones() {
+        const data = await api('GET', '/api/zones');
+        const zones = data.zones || [];
+
+        // Stats
+        const totalReminders = zones.reduce((n, z) => n + (z.reminders?.length || 0), 0);
+        document.getElementById('zones-stats').innerHTML = `
+            <div class="stat-card">
+                <div class="stat-label">Zones</div>
+                <div class="stat-value">${zones.length}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Reminders</div>
+                <div class="stat-value">${totalReminders}</div>
+            </div>
+        `;
+
+        // Initialize map once
+        const mapContainer = document.getElementById('zones-map');
+        if (!zonesMap) {
+            zonesMap = L.map(mapContainer, {
+                zoomControl: true,
+                attributionControl: true,
+            }).setView([37.4, -122.1], 12);
+
+            // Dark-themed tiles
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                attribution: '&copy; OpenStreetMap &copy; CARTO',
+                maxZoom: 19,
+            }).addTo(zonesMap);
+
+            zonesLayer = L.layerGroup().addTo(zonesMap);
+        }
+
+        // Force map resize (fixes grey tiles when tab was hidden)
+        setTimeout(() => zonesMap.invalidateSize(), 100);
+
+        // Clear existing markers
+        zonesLayer.clearLayers();
+
+        if (zones.length === 0) {
+            document.getElementById('zones-list').innerHTML = `
+                <div class="card" style="text-align:center; padding:32px; color:var(--text-muted);">
+                    No zones registered. Use Sora to create zones:
+                    <br><code style="color:var(--accent);">"Set a zone called home at 123 Main St"</code>
+                </div>
+            `;
+            return;
+        }
+
+        // Add zones to map
+        const bounds = [];
+        zones.forEach(z => {
+            const latlng = [z.latitude, z.longitude];
+            bounds.push(latlng);
+
+            // Zone circle
+            const circle = L.circle(latlng, {
+                radius: z.radius_m,
+                color: '#7c5cfc',
+                fillColor: '#7c5cfc',
+                fillOpacity: 0.15,
+                weight: 2,
+            }).addTo(zonesLayer);
+
+            // Popup content
+            const reminderList = (z.reminders || []).map(r =>
+                `<div style="font-size:12px; margin:2px 0;">
+                    ${r.trigger === 'enter' ? '📍' : '🚶'} ${r.message}
+                </div>`
+            ).join('') || '<span style="color:#9090b0;">No reminders</span>';
+
+            circle.bindPopup(`
+                <div style="font-family:Inter,sans-serif; min-width:180px;">
+                    <strong style="font-size:14px;">${z.name}</strong>
+                    <div style="font-size:12px; color:#9090b0; margin:4px 0;">
+                        ${z.latitude.toFixed(5)}, ${z.longitude.toFixed(5)} · ${z.radius_m}m
+                    </div>
+                    <hr style="border:none; border-top:1px solid #2e2e4a; margin:6px 0;">
+                    ${reminderList}
+                </div>
+            `);
+
+            // Zone label
+            L.marker(latlng, {
+                icon: L.divIcon({
+                    className: '',
+                    html: `<div style="
+                        background: #22223a;
+                        color: #e8e8f0;
+                        padding: 3px 8px;
+                        border-radius: 6px;
+                        font-size: 12px;
+                        font-family: Inter, sans-serif;
+                        font-weight: 600;
+                        border: 1px solid #7c5cfc;
+                        white-space: nowrap;
+                        box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+                    ">${z.name}</div>`,
+                    iconAnchor: [0, -z.radius_m / 10],
+                }),
+            }).addTo(zonesLayer);
+        });
+
+        // Fit map to show all zones
+        if (bounds.length > 0) {
+            zonesMap.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+        }
+
+        // Zone list below map
+        const rows = zones.map(z => {
+            const rCount = z.reminders?.length || 0;
+            return `
+                <div class="card" style="display:flex; justify-content:space-between; align-items:center; padding:14px 18px; margin-bottom:8px;">
+                    <div>
+                        <strong>${z.name}</strong>
+                        <span style="color:var(--text-muted); margin-left:8px;">${z.latitude.toFixed(4)}, ${z.longitude.toFixed(4)}</span>
+                    </div>
+                    <div style="display:flex; gap:16px; align-items:center;">
+                        <span style="color:var(--text-secondary);">⭕ ${z.radius_m}m</span>
+                        <span style="color:${rCount > 0 ? 'var(--accent)' : 'var(--text-muted)'};">🔔 ${rCount}</span>
+                    </div>
+                </div>
+            `;
+        }).join('');
+        document.getElementById('zones-list').innerHTML = rows;
+    }
+
     </script>
+
 </body>
 </html>

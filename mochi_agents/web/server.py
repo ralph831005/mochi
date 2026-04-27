@@ -44,7 +44,10 @@ def _load_mission(agent_name: str) -> dict:
     """Load an agent's mission.yaml."""
     settings = get_settings()
     agents_dir = settings.resolve_path(settings.agents_dir)
+    custom_agents_dir = settings.resolve_path(settings.custom_agents_dir)
     mission_path = agents_dir / agent_name / "mission.yaml"
+    if not mission_path.exists():
+        mission_path = custom_agents_dir / agent_name / "mission.yaml"
     if not mission_path.exists():
         return {}
     with open(mission_path) as f:
@@ -476,6 +479,39 @@ async def api_expirables(request: web.Request) -> web.Response:
         return _json_response({"items": [], "summary": {"total": 0, "active": 0, "expiring_soon": 0, "total_value_at_risk": 0}})
 
 
+async def api_zones(request: web.Request) -> web.Response:
+    """GET /api/zones — all geofence zones with coordinates."""
+    from mochi_agents.core.location import get_tracker
+
+    tracker = get_tracker()
+
+    try:
+        # Load zones for all users (empty user_id = all)
+        zones = await tracker.list_geofences("")
+
+        # Also get reminders for each zone
+        reminders = await tracker.list_reminders("")
+        reminder_map: dict[str, list[dict]] = {}
+        for r in reminders:
+            zone_name = r.get("zone_name", "")
+            reminder_map.setdefault(zone_name, []).append(r)
+
+        data = []
+        for z in zones:
+            data.append({
+                "name": z["name"],
+                "latitude": z["latitude"],
+                "longitude": z["longitude"],
+                "radius_m": z["radius_m"],
+                "reminders": reminder_map.get(z["name"], []),
+            })
+
+        return _json_response({"zones": data, "count": len(data)})
+    except Exception as e:
+        logger.error(f"Error fetching zones: {e}", exc_info=True)
+        return _json_response({"zones": [], "count": 0})
+
+
 async def index_handler(request: web.Request) -> web.Response:
     """Serve the dashboard SPA with no-cache headers."""
     index_path = STATIC_DIR / "index.html"
@@ -519,6 +555,7 @@ def create_app(bot: MochiBot | None = None) -> web.Application:
     app.router.add_get("/api/schedules", api_schedules)
     app.router.add_post("/api/chat", api_chat)
     app.router.add_get("/api/expirables", api_expirables)
+    app.router.add_get("/api/zones", api_zones)
 
     # Static files and SPA fallback
     if STATIC_DIR.exists():
