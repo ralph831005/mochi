@@ -7,30 +7,6 @@ agents:
     routing_keys: []
     status: active
 
-  - name: nutritionist
-    display_name: "Noa"
-    description: "Manages daily diet tracking, macro estimation, and dietary suggestions."
-    routing_keys:
-      - nutrition
-      - diet
-      - food
-      - meal
-      - calories
-      - macros
-      - breakfast
-      - lunch
-      - dinner
-      - snack
-      - eat
-      - ate
-      - protein
-      - carbs
-      - fat
-      - vitamin
-      - water
-      - drink
-    status: active
-
   - name: admin
     display_name: "Anna"
     description: "Creates and manages agents, tools, and system config via chat."
@@ -49,3 +25,35 @@ agents:
     description: "Discovers and packages new skills when no existing agent can handle a task."
     routing_keys: []
     status: active
+
+  - name: secretary
+    display_name: "Sora"
+    description: "Personal secretary & bookkeeper. Manages location reminders and tracks credits, coupons, subscriptions with expiration dates."
+    routing_keys:
+      - location
+      - remind
+      - reminder
+      - geofence
+      - zone
+      - arrive
+      - leave
+      - place
+      - home
+      - office
+      - costco
+      - store
+      - errand
+      - where
+      - position
+      - credit
+      - coupon
+      - expir
+      - subscription
+      - uber
+      - track
+      - booking
+      - expire
+      - due
+      - deadline
+    status: active
+

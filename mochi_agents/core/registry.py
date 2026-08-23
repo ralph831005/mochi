@@ -29,13 +29,25 @@ class Registry:
         self._alias_map: dict[str, str] = {}  # alias -> agent name
 
     def load(self, registry_path: Path) -> None:
-        """Parse system/registry.yaml and populate agent entries."""
-        with open(registry_path) as f:
-            data = yaml.safe_load(f) or {}
-
+        """Parse system/registry.yaml + user_registry.yaml and populate agent entries."""
         self._agents.clear()
         self._alias_map.clear()
-        for entry in data.get("agents", []):
+
+        # Load system registry (upstream, tracked in git)
+        all_entries = []
+        if registry_path.exists():
+            with open(registry_path) as f:
+                data = yaml.safe_load(f) or {}
+            all_entries.extend(data.get("agents", []))
+
+        # Load user registry (local, git-ignored)
+        user_registry_path = registry_path.parent / "user_registry.yaml"
+        if user_registry_path.exists():
+            with open(user_registry_path) as f:
+                user_data = yaml.safe_load(f) or {}
+            all_entries.extend(user_data.get("agents", []))
+
+        for entry in all_entries:
             agent = AgentEntry(
                 name=entry["name"],
                 display_name=entry.get("display_name", entry["name"]),
@@ -49,10 +61,12 @@ class Registry:
                 for alias in agent.aliases:
                     self._alias_map[alias.lower()] = agent.name
 
-    def load_aliases_from_missions(self, agents_dir: Path) -> None:
+    def load_aliases_from_missions(self, agents_dir: Path, custom_agents_dir: Path | None = None) -> None:
         """Scan mission files for aliases and merge into the registry."""
         for agent in self._agents.values():
             mission_path = agents_dir / agent.name / "mission.yaml"
+            if not mission_path.exists() and custom_agents_dir:
+                mission_path = custom_agents_dir / agent.name / "mission.yaml"
             if not mission_path.exists():
                 continue
             with open(mission_path) as f:

@@ -10,6 +10,7 @@ import logging
 import signal
 import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -70,7 +71,8 @@ class MochiBot:
 
         # Load aliases from mission files
         agents_dir = self.settings.resolve_path(self.settings.agents_dir)
-        self.registry.load_aliases_from_missions(agents_dir)
+        custom_agents_dir = self.settings.resolve_path(self.settings.custom_agents_dir)
+        self.registry.load_aliases_from_missions(agents_dir, custom_agents_dir)
 
         # Initialize databases for all registered agents
         data_dir = self.settings.resolve_path(self.settings.data_dir)
@@ -149,17 +151,83 @@ class MochiBot:
 
     async def _poll_loop(self) -> None:
         """Reactive loop: receive messages and route them."""
+        from mochi_agents.core.location import get_tracker
         from mochi_agents.core.router import RouteResponse
 
         logger.info("Poll loop started")
+        tracker = get_tracker()
+        location_acked: set[str] = set()  # user_ids we've already acknowledged
 
         async for message in self.client.poll():
-
-            if not message.text:
-                continue
-
             try:
+                # --- Location update (live location shares) ---
+                if message.location:
+                    lat = message.location["latitude"]
+                    lon = message.location["longitude"]
+                    logger.debug(
+                        f"Location update: [{message.user_id}] "
+                        f"({lat:.5f}, {lon:.5f})"
+                    )
+
+                    events = await tracker.update_position(
+                        message.user_id, lat, lon,
+                    )
+
+                    # Fire proactive reminders for any geofence transitions
+                    for event in events:
+                        await self._handle_geofence_event(
+                            event, message.user_id, message.chat_id,
+                        )
+
+                    # Acknowledge only the FIRST location update per user session
+                    if message.user_id not in location_acked:
+                        location_acked.add(message.user_id)
+                        zones = await tracker.list_geofences(message.user_id)
+                        if zones:
+                            zone_list = ", ".join(z["name"] for z in zones)
+                            await self.client.send(
+                                message.chat_id,
+                                f"📍 Location received! Tracking against "
+                                f"{len(zones)} zone(s): {zone_list}\n"
+                                f"I'll notify you on enter/exit events.",
+                            )
+                        else:
+                            await self.client.send(
+                                message.chat_id,
+                                "📍 Location received! I'm tracking your position.\n\n"
+                                "You don't have any zones set up yet. "
+                                "Talk to Sora to create some:\n"
+                                '• "Set my home at my current location"\n'
+                                '• "Set office at my current location"\n'
+                                '• "Set Costco at 37.43, -122.17"\n\n'
+                                "Then add reminders like:\n"
+                                '• "Remind me to buy eggs when I\'m at Costco"\n'
+                                '• "When I leave office, remind me to stop by Costco"',
+                            )
+
+                    # If message also has text, route it normally (unusual)
+                    if not message.text:
+                        continue
+
+                # --- Text messages ---
+                if not message.text:
+                    continue
+
                 logger.info(f"Received: [{message.user_id}] {message.text[:100]}")
+
+                # Set up retry notification so user knows we're retrying, not hanging
+                from mochi_agents.core.agent_runtime import set_retry_notify, _RETRY_DELAYS
+
+                async def _notify_retry(attempt: int, delay: int) -> None:
+                    try:
+                        await self.client.send(
+                            message.chat_id,
+                            f"⏳ Gemini API error — retrying in {delay}s (attempt {attempt}/{len(_RETRY_DELAYS)})...",
+                        )
+                    except Exception:
+                        pass
+
+                set_retry_notify(_notify_retry)
 
                 response = await self.router.route(
                     text=message.text,
@@ -182,12 +250,79 @@ class MochiBot:
             except Exception as e:
                 logger.error(f"Error processing message: {e}", exc_info=True)
                 try:
-                    await self.client.send(
-                        message.chat_id,
-                        "Sorry, something went wrong. Please try again.",
-                    )
+                    # Give a clear message when it's a Gemini API issue
+                    error_str = str(e)
+                    if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                        user_msg = (
+                            "⚠️ Your Gemini API key has hit its rate limit. "
+                            "I've already retried a few times. Please wait a few minutes or check your quota at "
+                            "https://aistudio.google.com/apikey"
+                        )
+                    elif "503" in error_str or "UNAVAILABLE" in error_str:
+                        user_msg = (
+                            "⚠️ The Gemini API is currently overloaded (503). "
+                            "This is on Google's side. I've already retried — please try again in a few minutes."
+                        )
+                    elif "ServerError" in type(e).__name__ or "google.genai" in error_str:
+                        user_msg = f"⚠️ The Gemini API returned an error: {type(e).__name__}. Please try again later."
+                    else:
+                        user_msg = "Sorry, something went wrong. Please try again."
+                    await self.client.send(message.chat_id, user_msg)
                 except Exception:
                     pass
+
+
+    async def _handle_geofence_event(
+        self,
+        event: Any,
+        user_id: str,
+        chat_id: str,
+    ) -> None:
+        """Handle a geofence enter/exit event — send proactive reminders."""
+        from mochi_agents.core.location import get_tracker
+
+        tracker = get_tracker()
+
+        # Fetch and fire matching one-shot reminders
+        reminders = await tracker.get_triggered_reminders(
+            user_id, event.zone_name, event.event,
+        )
+
+        if not reminders:
+            # No active reminders for this transition — log and skip
+            logger.info(
+                f"Geofence {event.event} '{event.zone_name}' for user {user_id} — no active reminders"
+            )
+            return
+
+        # Build a proactive message via the secretary agent
+        reminder_texts = "\n".join(f"- {r['message']}" for r in reminders)
+        prompt = (
+            f"[LOCATION EVENT] The user just **{event.event}ed** the zone "
+            f"**{event.zone_name}**.\n\n"
+            f"Active reminders that just fired:\n{reminder_texts}\n\n"
+            f"Deliver these reminders in a brief, friendly message. "
+            f"Don't add extra commentary — just relay the reminders clearly."
+        )
+
+        try:
+            response = await self.runtime.execute(
+                "secretary",
+                prompt,
+                user_id=user_id,
+                source="location",
+            )
+            emoji = "📍" if event.event == "enter" else "🚶"
+            await self.client.send(chat_id, f"{emoji} {response}")
+        except Exception as e:
+            logger.error(f"Failed to deliver geofence reminder: {e}", exc_info=True)
+            # Fall back to raw reminder text
+            emoji = "📍" if event.event == "enter" else "🚶"
+            fallback = f"{emoji} **{event.event.title()}ing {event.zone_name}**\n{reminder_texts}"
+            try:
+                await self.client.send(chat_id, fallback)
+            except Exception:
+                pass
 
     def _register_tools(self) -> None:
         """Scan mission files and register tool modules with the ToolRunner."""
@@ -198,8 +333,8 @@ class MochiBot:
             if not mission_path.exists():
                 continue
 
-            with open(mission_path) as f:
-                mission = yaml.safe_load(f) or {}
+            # Use agent_runtime's merged mission (mission.yaml + config overrides)
+            mission = self.runtime.load_mission(agent.name)
 
             tools_module = mission.get("tools_module")
             if tools_module:

@@ -44,7 +44,10 @@ def _load_mission(agent_name: str) -> dict:
     """Load an agent's mission.yaml."""
     settings = get_settings()
     agents_dir = settings.resolve_path(settings.agents_dir)
+    custom_agents_dir = settings.resolve_path(settings.custom_agents_dir)
     mission_path = agents_dir / agent_name / "mission.yaml"
+    if not mission_path.exists():
+        mission_path = custom_agents_dir / agent_name / "mission.yaml"
     if not mission_path.exists():
         return {}
     with open(mission_path) as f:
@@ -390,6 +393,125 @@ async def api_key_delete(request: web.Request) -> web.Response:
     else:
         return _json_response({"error": f"Key '{name}' not found"}, 404)
 
+async def api_expirables(request: web.Request) -> web.Response:
+    """GET /api/expirables — list expirable items (read-only).
+
+    Query params:
+        status: filter by status (active, used, expired). Default: all.
+        category: filter by category (credit, coupon, etc.). Default: all.
+    """
+    from datetime import datetime
+    from sqlalchemy import select
+    from mochi_agents.memory.database import get_session_factory
+    from mochi_agents.memory.models import ExpirableItem
+
+    status_filter = request.query.get("status", "").lower().strip()
+    category_filter = request.query.get("category", "").lower().strip()
+    logger.info(f"GET /api/expirables — status={status_filter!r} category={category_filter!r}")
+
+    settings = get_settings()
+    local_tz = settings.get_tz()
+    data_dir = settings.resolve_path(settings.data_dir)
+    factory = get_session_factory("secretary", data_dir)
+    now = datetime.now(local_tz)
+
+    try:
+        async with factory() as session:
+            # Auto-expire active items past their date
+            expire_stmt = (
+                select(ExpirableItem)
+                .where(
+                    ExpirableItem.status == "active",
+                    ExpirableItem.expiration_date <= now,
+                )
+            )
+            expire_res = await session.execute(expire_stmt)
+            for stale in expire_res.scalars().all():
+                stale.status = "expired"
+            await session.commit()
+
+            # Build filtered query
+            stmt = (
+                select(ExpirableItem)
+                .order_by(ExpirableItem.expiration_date)
+            )
+            if status_filter:
+                stmt = stmt.where(ExpirableItem.status == status_filter)
+            if category_filter:
+                stmt = stmt.where(ExpirableItem.category == category_filter)
+
+            res = await session.execute(stmt)
+            items = res.scalars().all()
+
+        data = [
+            {
+                "id": i.id,
+                "user_id": i.user_id,
+                "title": i.title,
+                "description": i.description,
+                "value": i.value,
+                "category": i.category,
+                "expiration_date": i.expiration_date.isoformat() if i.expiration_date else None,
+                "status": i.status,
+                "days_left": max(0, (i.expiration_date.replace(tzinfo=local_tz) - now).days)
+                    if i.status == "active" and i.expiration_date else 0,
+                "created_at": i.created_at.isoformat() if i.created_at else None,
+            }
+            for i in items
+        ]
+
+        # Summary stats
+        active_items = [d for d in data if d["status"] == "active"]
+        expiring_soon = [d for d in active_items if d["days_left"] <= 7]
+        total_value_at_risk = sum(d["value"] or 0 for d in expiring_soon)
+
+        return _json_response({
+            "items": data,
+            "summary": {
+                "total": len(data),
+                "active": len(active_items),
+                "expiring_soon": len(expiring_soon),
+                "total_value_at_risk": round(total_value_at_risk, 2),
+            },
+        })
+    except Exception as e:
+        logger.error(f"Error fetching expirables: {e}", exc_info=True)
+        return _json_response({"items": [], "summary": {"total": 0, "active": 0, "expiring_soon": 0, "total_value_at_risk": 0}})
+
+
+async def api_zones(request: web.Request) -> web.Response:
+    """GET /api/zones — all geofence zones with coordinates."""
+    from mochi_agents.core.location import get_tracker
+
+    tracker = get_tracker()
+
+    try:
+        # Load zones for all users (empty user_id = all)
+        zones = await tracker.list_geofences("")
+
+        # Also get reminders for each zone
+        reminders = await tracker.list_reminders("")
+        reminder_map: dict[str, list[dict]] = {}
+        for r in reminders:
+            zone_name = r.get("zone_name", "")
+            reminder_map.setdefault(zone_name, []).append(r)
+
+        data = []
+        for z in zones:
+            data.append({
+                "name": z["name"],
+                "latitude": z["latitude"],
+                "longitude": z["longitude"],
+                "radius_m": z["radius_m"],
+                "reminders": reminder_map.get(z["name"], []),
+            })
+
+        return _json_response({"zones": data, "count": len(data)})
+    except Exception as e:
+        logger.error(f"Error fetching zones: {e}", exc_info=True)
+        return _json_response({"zones": [], "count": 0})
+
+
 async def index_handler(request: web.Request) -> web.Response:
     """Serve the dashboard SPA with no-cache headers."""
     index_path = STATIC_DIR / "index.html"
@@ -432,6 +554,8 @@ def create_app(bot: MochiBot | None = None) -> web.Application:
     app.router.add_delete("/api/keys/{name}", api_key_delete)
     app.router.add_get("/api/schedules", api_schedules)
     app.router.add_post("/api/chat", api_chat)
+    app.router.add_get("/api/expirables", api_expirables)
+    app.router.add_get("/api/zones", api_zones)
 
     # Static files and SPA fallback
     if STATIC_DIR.exists():

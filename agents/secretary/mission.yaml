@@ -1,0 +1,51 @@
+name: secretary
+display_name: "Sora"
+description: "Personal secretary & bookkeeper. Manages location-based reminders, tracks credits, coupons, and subscriptions with expiration dates."
+aliases: [s, sec, sora]
+routing_keys:
+  - location
+  - remind
+  - reminder
+  - geofence
+  - zone
+  - arrive
+  - leave
+  - place
+  - home
+  - office
+  - costco
+  - store
+  - errand
+  - where
+  - position
+  # Bookkeeping
+  - credit
+  - coupon
+  - expir
+  - subscription
+  - uber
+  - track
+  - booking
+  - expire
+  - due
+  - deadline
+tools_module: mochi_agents.agents.secretary.tools
+model_config:
+  provider: google
+  model: gemini-3.1-flash-lite-preview
+  temperature: 0.3
+  max_tokens: 2048
+capabilities:
+  - text_prompt
+context_tools:
+  - tool: list_zones
+    label: "My Zones"
+  - tool: list_reminders
+    label: "Active Reminders"
+  - tool: list_expirables
+    label: "Active Expirables"
+schedules:
+  - name: check_expiring_items
+    cron: "0 9 * * *"
+    action: check_expiring_items
+    target_user_ids: all

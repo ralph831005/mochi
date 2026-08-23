@@ -35,9 +35,32 @@ class Settings(BaseModel):
     allowed_user_ids: list[int] = Field(default_factory=list)
     data_dir: Path = Path("./data")
     agents_dir: Path = Path("./agents")
+    custom_agents_dir: Path = Path("./custom_agents")
     system_dir: Path = Path("./system")
     dashboard_port: int = 8080
     dashboard_enabled: bool = True
+    timezone: str = "America/Los_Angeles"  # IANA timezone for local dates
+    marketplace_url: str = "https://github.com/ralph831005/mochi-marketplace/raw/main/agents"
+
+    # User-specific cron schedules (separate from agent mission.yaml defaults)
+    # Each entry: {agent, name, cron, action, mode?, args?, target_user_ids?}
+    schedules: list[dict] = Field(default_factory=list)
+
+    # Runtime overrides per agent (model_config, mcp_servers, etc.)
+    # Written to config.yaml at runtime, merged on top of mission.yaml defaults.
+    agent_overrides: dict[str, dict] = Field(default_factory=dict)
+
+    # Google Search grounding — agents not in exclude list get grounding
+    # {exclude_agents: ["manager"]}
+    google_search_grounding: dict = Field(default_factory=dict)
+
+    # URL Context — agents not in exclude list can read web page content
+    # {exclude_agents: ["manager"]}
+    url_context: dict = Field(default_factory=dict)
+
+    # Thinking — per-agent thinking level for deep reasoning
+    # {agents: {learner: "medium", admin: "low"}}
+    thinking: dict = Field(default_factory=dict)
 
     # Internal: project root (not from YAML)
     project_root: Path = Field(default_factory=_find_project_root)
@@ -48,6 +71,11 @@ class Settings(BaseModel):
         if relative.is_absolute():
             return relative
         return self.project_root / relative
+
+    def get_tz(self):
+        """Return a ZoneInfo object for the configured timezone."""
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(self.timezone)
 
 
 # ---------------------------------------------------------------------------
@@ -64,14 +92,27 @@ def _load_yaml(path: Path) -> dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
+def _deep_merge(dict1: dict[str, Any], dict2: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge dict2 into dict1."""
+    merged = dict1.copy()
+    for k, v in dict2.items():
+        if isinstance(v, dict) and k in merged and isinstance(merged[k], dict):
+            merged[k] = _deep_merge(merged[k], v)
+        else:
+            merged[k] = v
+    return merged
+
+
 def load_settings(project_root: Path | None = None) -> Settings:
-    """Read config.yaml + secret.yaml and return a validated Settings instance."""
+    """Read config.yaml + user_config.yaml + secret.yaml and return a validated Settings instance."""
     root = project_root or _find_project_root()
 
     config_path = root / "config.yaml"
+    user_config_path = root / "user_config.yaml"
     secret_path = root / "secret.yaml"
 
     config_data = _load_yaml(config_path)
+    user_data = _load_yaml(user_config_path)
     secret_data = _load_yaml(secret_path)
 
     if not secret_path.exists():
@@ -81,7 +122,11 @@ def load_settings(project_root: Path | None = None) -> Settings:
             file=sys.stderr,
         )
 
-    merged = {**config_data, **secret_data, "project_root": root}
+    # Priority: secret > user_config > config
+    merged = _deep_merge(config_data, user_data)
+    merged = _deep_merge(merged, secret_data)
+    merged["project_root"] = root
+    
     return Settings(**merged)
 
 
@@ -131,3 +176,33 @@ def remove_api_key(name: str) -> bool:
         reload_settings()
         return True
     return False
+
+
+def save_agent_override(agent_name: str, key: str, value: Any) -> None:
+    """Persist a runtime override for an agent to config.yaml.
+
+    This keeps mission.yaml clean (committed defaults) while storing
+    user-specific changes (model_config, mcp_servers) in config.yaml.
+
+    Args:
+        agent_name: e.g., "secretary"
+        key: e.g., "model_config" or "mcp_servers"
+        value: the override value (will be deep-merged for dicts)
+    """
+    settings = get_settings()
+    config_path = settings.project_root / "config.yaml"
+
+    config_data = _load_yaml(config_path)
+    overrides = config_data.setdefault("agent_overrides", {})
+    agent_section = overrides.setdefault(agent_name, {})
+
+    # Deep-merge for dicts, replace for other types
+    if isinstance(value, dict) and isinstance(agent_section.get(key), dict):
+        agent_section[key].update(value)
+    else:
+        agent_section[key] = value
+
+    with open(config_path, "w") as f:
+        yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+
+    reload_settings()

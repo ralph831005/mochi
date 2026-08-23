@@ -99,3 +99,64 @@ class MealLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)
     )
+
+
+# ---------------------------------------------------------------------------
+# Secretary / Location-awareness models
+# ---------------------------------------------------------------------------
+
+class Geofence(Base):
+    """A named circular geofence zone (e.g., 'home', 'office', 'costco')."""
+
+    __tablename__ = "geofences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(50))
+    name: Mapped[str] = mapped_column(String(100))  # human label, lowercased
+    latitude: Mapped[float] = mapped_column(Float)
+    longitude: Mapped[float] = mapped_column(Float)
+    radius_m: Mapped[float] = mapped_column(Float, default=150.0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class LocationReminder(Base):
+    """A one-shot reminder tied to a geofence enter/exit event.
+
+    Once fired, ``status`` moves from 'active' → 'fired'.
+    """
+
+    __tablename__ = "location_reminders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(50))
+    zone_name: Mapped[str] = mapped_column(String(100))  # matches Geofence.name
+    trigger: Mapped[str] = mapped_column(String(10))  # "enter" or "exit"
+    message: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active, fired
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+
+class ExpirableItem(Base):
+    """Tracks credits, coupons, subscriptions, and other time-sensitive items.
+
+    Status lifecycle: active → used | expired.
+    Items past their expiration_date are auto-expired on query.
+    """
+
+    __tablename__ = "expirable_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(50))
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)  # monetary/point value
+    category: Mapped[str | None] = mapped_column(String(50), nullable=True)  # credit, coupon, subscription, etc.
+    expiration_date: Mapped[datetime] = mapped_column(DateTime)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active, used, expired
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+

@@ -1,8 +1,21 @@
 # Secrets
 secret.yaml
 
+# User-specific config (runtime overrides, personal IDs, toggle states)
+user_config.yaml
+*custom_tools.py
+custom_agents/
+system/user_registry.yaml
+
+# Temp
+.tmp/
+scripts/
+
 # Data
 data/*.db
+
+# Agent export bundles
+*.agent
 
 # Python
 __pycache__/
@@ -17,6 +30,7 @@ build/
 .venv/
 venv/
 env/
+.python-version
 
 # IDE
 .vscode/

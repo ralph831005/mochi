@@ -12,6 +12,12 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+CUSTOM_TOOL_API_VERSION = "1.0"
+
 
 @dataclass
 class ToolDeclaration:
@@ -96,11 +102,32 @@ class ImportlibToolRunner:
             return
 
         module = importlib.import_module(module_path)
-        if not hasattr(module, "get_tools"):
+        tools = module.get_tools() if hasattr(module, "get_tools") else []
+
+        # Attempt to load custom user tools for this agent
+        if module_path.endswith(".tools"):
+            custom_module_path = module_path[:-6] + ".custom_tools"
+            try:
+                custom_module = importlib.import_module(custom_module_path)
+                
+                # Check version compatibility
+                tool_version = getattr(custom_module, "API_VERSION", None)
+                if tool_version is None:
+                    logger.warning(f"⚠️ Custom tools for '{agent_name}' are missing API_VERSION. Skipping load for safety.")
+                elif tool_version != CUSTOM_TOOL_API_VERSION:
+                    logger.warning(
+                        f"⚠️ Custom tools for '{agent_name}' use API v{tool_version}, "
+                        f"but Mochi expects v{CUSTOM_TOOL_API_VERSION}. Skipping load."
+                    )
+                elif hasattr(custom_module, "get_tools"):
+                    tools.extend(custom_module.get_tools())
+            except ImportError:
+                pass
+
+        if not tools:
             self._cache[agent_name] = {}
             return
 
-        tools = module.get_tools()
         declarations: dict[str, ToolDeclaration] = {}
 
         for tool_fn in tools:
@@ -170,8 +197,9 @@ class ImportlibToolRunner:
 class MCPToolRunner:
     """ToolRunner that connects to external MCP servers via the official SDK.
 
-    Uses streamable-http transport to discover tools (list_tools) and
-    execute them (call_tool) on remote MCP server processes.
+    Supports two transport modes:
+    - streamable-http: for remote servers (config has 'url')
+    - stdio: for local subprocess servers (config has 'command' + 'args')
     """
 
     def __init__(self) -> None:
@@ -196,13 +224,19 @@ class MCPToolRunner:
             contexts = []
 
             for config in configs:
-                url = config.get("url")
-                if not url:
-                    continue
                 whitelist = config.get("tools")
+                label = config.get("url") or config.get("name", config.get("command", "?"))
                 try:
-                    session, ctx = await self._connect_one(url)
-                    sessions.append((session, url))
+                    # Auto-detect transport from config
+                    if config.get("url"):
+                        session, ctx = await self._connect_http(config["url"])
+                    elif config.get("command"):
+                        session, ctx = await self._connect_stdio(config)
+                    else:
+                        logger.warning(f"MCP: skipping config with no url or command for '{agent_name}'")
+                        continue
+
+                    sessions.append((session, label))
                     contexts.append(ctx)
 
                     # Discover tools
@@ -226,11 +260,11 @@ class MCPToolRunner:
                         added_count += 1
 
                     logger.info(
-                        f"MCP: agent '{agent_name}' connected to {url} "
+                        f"MCP: agent '{agent_name}' connected to {label} "
                         f"— {added_count}/{len(tools_result.tools)} tools allowed"
                     )
                 except Exception as e:
-                    logger.warning(f"MCP: failed to connect to {url} for '{agent_name}': {e}")
+                    logger.warning(f"MCP: failed to connect to {label} for '{agent_name}': {e}")
 
             self._cache[agent_name] = declarations
             self._sessions[agent_name] = sessions
@@ -238,13 +272,11 @@ class MCPToolRunner:
 
         self._connected = True
 
-    async def _connect_one(self, url: str) -> tuple[Any, Any]:
-        """Open a single MCP client session to a streamable-http server."""
+    async def _connect_http(self, url: str) -> tuple[Any, Any]:
+        """Open a single MCP client session via streamable-http transport."""
         from mcp import ClientSession
         from mcp.client.streamable_http import streamablehttp_client
 
-        # streamablehttp_client is an async context manager that yields (read, write, _)
-        # We need to keep these alive, so we enter the contexts manually.
         transport_ctx = streamablehttp_client(url)
         read_stream, write_stream, _ = await transport_ctx.__aenter__()
 
@@ -252,7 +284,35 @@ class MCPToolRunner:
         session = await session_ctx.__aenter__()
         await session.initialize()
 
-        # Bundle contexts so we can clean up later
+        return session, (session_ctx, transport_ctx)
+
+    async def _connect_stdio(self, config: dict) -> tuple[Any, Any]:
+        """Open a single MCP client session via stdio transport (subprocess)."""
+        import os
+        from mcp import ClientSession
+        from mcp.client.stdio import stdio_client, StdioServerParameters
+
+        command = config["command"]
+        args = config.get("args", [])
+
+        # Build environment: inherit current env + any extras from config
+        env = dict(os.environ)
+        if config.get("env"):
+            env.update(config["env"])
+
+        server_params = StdioServerParameters(
+            command=command,
+            args=args,
+            env=env,
+        )
+
+        transport_ctx = stdio_client(server_params)
+        read_stream, write_stream = await transport_ctx.__aenter__()
+
+        session_ctx = ClientSession(read_stream, write_stream)
+        session = await session_ctx.__aenter__()
+        await session.initialize()
+
         return session, (session_ctx, transport_ctx)
 
     async def execute(self, agent_name: str, tool_name: str, args: dict) -> ToolResult:

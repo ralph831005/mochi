@@ -7,6 +7,8 @@ Usage:
     mochi-agents config set K V Set a config value
     mochi-agents agent list     List registered agents
     mochi-agents agent info X   Show agent details
+    mochi-agents reset          Reset conversation history (keeps data)
+    mochi-agents reset --all    Full factory reset (deletes everything)
 """
 
 from __future__ import annotations
@@ -33,6 +35,10 @@ def main() -> None:
         run_config()
     elif command == "agent":
         run_agent()
+    elif command == "reset":
+        run_reset()
+    elif command == "completions":
+        run_completions()
     elif command in ("--help", "-h"):
         print_help()
     else:
@@ -51,7 +57,16 @@ Usage:
   mochi-agents config show      Show current configuration
   mochi-agents config set K V   Set a configuration value
   mochi-agents agent list       List all registered agents
-  mochi-agents agent info NAME  Show agent details
+  mochi-agents agent info NAME    Show agent details
+  mochi-agents agent export NAME  Export an agent as a .agent bundle
+  mochi-agents agent import FILE  Import an agent from a .agent bundle
+  mochi-agents agent install NAME Download & import from marketplace
+  mochi-agents agent remove NAME  Remove an agent (with confirmation)
+  mochi-agents reset            Reset all agents' conversation history
+  mochi-agents reset NAME       Reset a specific agent's history
+  mochi-agents reset --all      Full factory reset (deletes all data)
+  mochi-agents reset NAME --all Full reset for a specific agent
+  mochi-agents completions      Print shell completion script
   mochi-agents --help           Show this help
 """)
 
@@ -333,7 +348,7 @@ def _config_del_key() -> None:
 def run_agent() -> None:
     """Handle `mochi-agents agent` subcommands."""
     if len(sys.argv) < 3:
-        print("Usage: mochi-agents agent <list|info>")
+        print("Usage: mochi-agents agent <list|info|export|import|install|remove>")
         sys.exit(1)
 
     sub = sys.argv[2]
@@ -341,6 +356,14 @@ def run_agent() -> None:
         _agent_list()
     elif sub == "info":
         _agent_info()
+    elif sub == "export":
+        _agent_export()
+    elif sub == "import":
+        _agent_import()
+    elif sub == "install":
+        _agent_install()
+    elif sub == "remove":
+        _agent_remove()
     else:
         print(f"Unknown agent command: {sub}")
         sys.exit(1)
@@ -398,6 +421,814 @@ def _agent_info() -> None:
 
     print(f"🍡 Agent: {mission.get('display_name', name)}\n")
     print(yaml.dump(mission, default_flow_style=False, sort_keys=False))
+
+
+def _agent_remove() -> None:
+    """Remove an agent completely.
+
+    Usage: mochi-agents agent remove <name>
+
+    Removes:
+        - agents/<name>/  (config)
+        - mochi_agents/agents/<name>/  (code, if not a default agent)
+        - data/<name>.db  (database)
+        - data/shortcuts/<name>.yaml  (shortcuts)
+        - system/registry.yaml entry
+        - config.yaml agent_overrides entry
+    """
+    import shutil
+
+    if len(sys.argv) < 4:
+        print("Usage: mochi-agents agent remove <name>")
+        sys.exit(1)
+
+    name = sys.argv[3]
+    project_root = _find_project_root()
+
+    # Gather what exists
+    agent_config_dir = project_root / "agents" / name
+    agent_code_dir = project_root / "mochi_agents" / "agents" / name
+    config = _load_yaml(project_root / "config.yaml")
+    data_dir = project_root / Path(config.get("data_dir", "./data"))
+    db_file = data_dir / f"{name}.db"
+    shortcuts_file = data_dir / "shortcuts" / f"{name}.yaml"
+    registry_path = project_root / "system" / "registry.yaml"
+
+    if not agent_config_dir.exists() and not db_file.exists():
+        print(f"  ❌ Agent '{name}' not found.")
+        sys.exit(1)
+
+    # Load display name
+    display_name = name
+    mission_path = agent_config_dir / "mission.yaml"
+    if mission_path.exists():
+        with open(mission_path) as f:
+            mission = yaml.safe_load(f) or {}
+        display_name = mission.get("display_name", name)
+
+    print()
+    print("🍡 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print(f"    Removing Agent: {display_name}")
+    print("   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print()
+
+    # Show what will be deleted
+    items = []
+    if agent_config_dir.exists():
+        files = list(agent_config_dir.rglob("*"))
+        items.append((f"agents/{name}/", f"{len([f for f in files if f.is_file()])} files"))
+        print(f"  🗑️  agents/{name}/ (mission config)")
+    if agent_code_dir.exists():
+        files = [f for f in agent_code_dir.rglob("*") if f.is_file() and "__pycache__" not in str(f)]
+        items.append((f"mochi_agents/agents/{name}/", f"{len(files)} files"))
+        print(f"  🗑️  mochi_agents/agents/{name}/ (tool code)")
+    if db_file.exists():
+        size_kb = db_file.stat().st_size // 1024
+        items.append((db_file.name, f"{size_kb}KB"))
+        print(f"  🗑️  data/{name}.db ({size_kb}KB)")
+    if shortcuts_file.exists():
+        items.append((f"shortcuts/{name}.yaml", ""))
+        print(f"  🗑️  data/shortcuts/{name}.yaml")
+    if config.get("agent_overrides", {}).get(name):
+        print(f"  🗑️  config.yaml agent_overrides.{name}")
+
+    # Check registry
+    in_registry = False
+    if registry_path.exists():
+        with open(registry_path) as f:
+            registry = yaml.safe_load(f) or {}
+        if name in [a["name"] for a in registry.get("agents", [])]:
+            in_registry = True
+            print(f"  🗑️  system/registry.yaml entry")
+
+    print()
+    print(f"  ⚠️  This will permanently remove {display_name} and all its data.")
+    print(f"  💡 Tip: run 'mochi-agents agent export {name}' first to back up.")
+    print()
+    confirm = input("  Are you sure? Type 'yes' to confirm: ").strip().lower()
+
+    if confirm != "yes":
+        print("  ❌ Removal cancelled.")
+        return
+
+    print()
+
+    # Delete config dir
+    if agent_config_dir.exists():
+        shutil.rmtree(agent_config_dir)
+        print(f"  ✅ Deleted agents/{name}/")
+
+    # Delete code dir
+    if agent_code_dir.exists():
+        shutil.rmtree(agent_code_dir)
+        print(f"  ✅ Deleted mochi_agents/agents/{name}/")
+
+    # Delete database
+    if db_file.exists():
+        db_file.unlink()
+        print(f"  ✅ Deleted data/{name}.db")
+
+    # Delete shortcuts
+    if shortcuts_file.exists():
+        shortcuts_file.unlink()
+        print(f"  ✅ Deleted data/shortcuts/{name}.yaml")
+
+    # Remove from registry
+    if in_registry:
+        registry["agents"] = [a for a in registry.get("agents", []) if a["name"] != name]
+        with open(registry_path, "w") as f:
+            yaml.dump(registry, f, default_flow_style=False, sort_keys=False)
+        print(f"  ✅ Removed from registry")
+
+    # Remove config overrides
+    config_path = project_root / "config.yaml"
+    if config_path.exists() and config.get("agent_overrides", {}).get(name):
+        del config["agent_overrides"][name]
+        with open(config_path, "w") as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        print(f"  ✅ Removed config overrides")
+
+    print()
+    print("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print(f"  🍡 {display_name} has been removed. Send /reload to apply.")
+    print()
+
+
+def _agent_export() -> None:
+    """Export an agent as a portable .agent bundle.
+
+    Usage: mochi-agents agent export <name> [--with-memory]
+
+    Includes:
+        - agents/<name>/  (mission.yaml, mission_prompt.md)
+        - mochi_agents/agents/<name>/  (tools code)
+        - data/shortcuts/<name>.yaml  (if exists)
+        - manifest.json  (metadata)
+        - memory_notes.json  (if --with-memory)
+    """
+    import json
+    import sqlite3
+    import zipfile
+    from datetime import datetime
+
+    if len(sys.argv) < 4:
+        print("Usage: mochi-agents agent export <name> [--with-memory]")
+        sys.exit(1)
+
+    name = sys.argv[3]
+    with_memory = "--with-memory" in sys.argv
+    project_root = _find_project_root()
+
+    # Validate agent exists
+    agent_config_dir = project_root / "agents" / name
+    agent_code_dir = project_root / "mochi_agents" / "agents" / name
+
+    if not agent_config_dir.exists():
+        print(f"  ❌ Agent config not found: agents/{name}/")
+        sys.exit(1)
+
+    mission_path = agent_config_dir / "mission.yaml"
+    if not mission_path.exists():
+        print(f"  ❌ No mission.yaml found for agent '{name}'")
+        sys.exit(1)
+
+    with open(mission_path) as f:
+        mission = yaml.safe_load(f) or {}
+
+    display_name = mission.get("display_name", name)
+
+    print()
+    print("🍡 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print(f"    Exporting Agent: {display_name}")
+    print("   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print()
+
+    # Build manifest
+    manifest = {
+        "name": name,
+        "display_name": display_name,
+        "description": mission.get("description", ""),
+        "version": mission.get("version", "1.0.0"),
+        "exported_at": datetime.now().isoformat(),
+        "tools_module": mission.get("tools_module", ""),
+        "includes_memory": with_memory,
+        "includes_code": agent_code_dir.exists(),
+    }
+
+    output_file = project_root / f"{name}.agent"
+
+    with zipfile.ZipFile(output_file, "w", zipfile.ZIP_DEFLATED) as zf:
+        # 1. Agent config (mission.yaml, mission_prompt.md)
+        for f in agent_config_dir.iterdir():
+            if f.is_file():
+                arcname = f"agents/{name}/{f.name}"
+                zf.write(f, arcname)
+                print(f"  📦 {arcname}")
+
+        # 2. Agent code (tools.py, __init__.py)
+        if agent_code_dir.exists():
+            for f in agent_code_dir.rglob("*"):
+                if f.is_file() and "__pycache__" not in str(f):
+                    arcname = str(f.relative_to(project_root))
+                    zf.write(f, arcname)
+                    print(f"  📦 {arcname}")
+
+        # 3. Shortcuts
+        shortcuts_file = project_root / "data" / "shortcuts" / f"{name}.yaml"
+        if shortcuts_file.exists():
+            arcname = f"data/shortcuts/{name}.yaml"
+            zf.write(shortcuts_file, arcname)
+            print(f"  📦 {arcname}")
+
+        # 4. Memory notes (optional)
+        if with_memory:
+            db_path = project_root / "data" / f"{name}.db"
+            if db_path.exists():
+                try:
+                    conn = sqlite3.connect(str(db_path))
+                    cursor = conn.cursor()
+                    tables = [r[0] for r in cursor.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()]
+
+                    if "memory_notes" in tables:
+                        rows = cursor.execute("SELECT * FROM memory_notes").fetchall()
+                        cols = [d[0] for d in cursor.description]
+                        notes = [dict(zip(cols, row)) for row in rows]
+                        if notes:
+                            zf.writestr("memory_notes.json", json.dumps(notes, indent=2, default=str))
+                            print(f"  🧠 memory_notes.json ({len(notes)} notes)")
+                    conn.close()
+                except Exception as e:
+                    print(f"  ⚠️  Could not export memory: {e}")
+
+        # 5. MCP skill files (from config.yaml agent_overrides)
+        config_data = _load_yaml(project_root / "config.yaml")
+        agent_overrides = config_data.get("agent_overrides", {}).get(name, {})
+        mcp_servers = agent_overrides.get("mcp_servers", [])
+
+        if mcp_servers:
+            # Save the MCP config
+            zf.writestr("mcp_servers.json", json.dumps(mcp_servers, indent=2))
+            print(f"  🔌 mcp_servers.json")
+
+            # Find and bundle referenced skill files
+            skills_dir = project_root / "skills_server" / "skills"
+            for server in mcp_servers:
+                if isinstance(server, dict):
+                    for tool_name in server.get("tools", []):
+                        skill_file = skills_dir / f"{tool_name}.py"
+                        if skill_file.exists():
+                            arcname = f"skills_server/skills/{tool_name}.py"
+                            zf.write(skill_file, arcname)
+                            print(f"  🔌 {arcname}")
+
+            manifest["includes_mcp"] = True
+
+        # 6. Manifest
+        zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+        print(f"  📝 manifest.json")
+
+    print()
+    print(f"  ✅ Exported to: {output_file}")
+    print(f"  📤 Share this file — import with: mochi-agents agent import {output_file.name}")
+    print()
+
+
+def _agent_import() -> None:
+    """Import an agent from a .agent bundle.
+
+    Usage: mochi-agents agent import <file.agent> [--with-memory]
+    """
+    import json
+    import sqlite3
+    import zipfile
+
+    if len(sys.argv) < 4:
+        print("Usage: mochi-agents agent import <file.agent> [--with-memory]")
+        sys.exit(1)
+
+    zip_path = Path(sys.argv[3])
+    import_memory = "--with-memory" in sys.argv
+
+    if not zip_path.exists():
+        print(f"  ❌ File not found: {zip_path}")
+        sys.exit(1)
+
+    project_root = _find_project_root()
+
+    # Read manifest first
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        try:
+            manifest = json.loads(zf.read("manifest.json"))
+        except KeyError:
+            print("  ❌ Invalid agent bundle: missing manifest.json")
+            sys.exit(1)
+
+        name = manifest["name"]
+        display_name = manifest.get("display_name", name)
+
+        new_version = manifest.get("version", "1.0.0")
+
+        print()
+        print("🍡 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print(f"    Importing Agent: {display_name}")
+        print("   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print()
+        print(f"  Name:        {name}")
+        print(f"  Version:     {new_version}")
+        print(f"  Description: {manifest.get('description', '—')[:60]}")
+        print(f"  Exported:    {manifest.get('exported_at', 'unknown')}")
+        print(f"  Has code:    {manifest.get('includes_code', False)}")
+        print(f"  Has memory:  {manifest.get('includes_memory', False)}")
+        print(f"  Has MCP:     {manifest.get('includes_mcp', False)}")
+        print()
+
+        # List contents
+        print("  Contents:")
+        for info in zf.infolist():
+            if info.filename != "manifest.json":
+                print(f"    📦 {info.filename} ({info.file_size:,} bytes)")
+        print()
+
+        # Check for conflicts — search both agents/ and custom_agents/
+        agent_config_dir = project_root / "custom_agents" / name
+        legacy_config_dir = project_root / "agents" / name
+        agent_code_dir = project_root / "mochi_agents" / "agents" / name
+
+        existing_dir = None
+        if agent_config_dir.exists():
+            existing_dir = agent_config_dir
+        elif legacy_config_dir.exists():
+            existing_dir = legacy_config_dir
+
+        if existing_dir:
+            # Check installed version
+            installed_mission = existing_dir / "mission.yaml"
+            old_version = "unknown"
+            if installed_mission.exists():
+                with open(installed_mission) as mf:
+                    old_mission = yaml.safe_load(mf) or {}
+                old_version = old_mission.get("version", "unknown")
+
+            print(f"  ⚠️  Agent '{name}' already installed (v{old_version} → v{new_version})")
+            print(f"  ℹ️  Your custom_tools.py and memories will be preserved.")
+            overwrite = input("  Update? Type 'yes' to confirm: ").strip().lower()
+            if overwrite != "yes":
+                print("  ❌ Import cancelled.")
+                return
+            print()
+
+        # Extract files — redirect agent configs to custom_agents/
+        for info in zf.infolist():
+            if info.filename == "manifest.json":
+                continue
+            if info.filename == "memory_notes.json":
+                continue  # handle separately
+            if info.filename == "mcp_servers.json":
+                continue  # handle separately
+            if info.filename == "registry_entry.json":
+                continue  # handle separately
+
+            dest_filename = info.filename
+            # Redirect agents/{name}/ → custom_agents/{name}/
+            if dest_filename.startswith(f"agents/{name}/"):
+                dest_filename = f"custom_agents/{name}/" + dest_filename[len(f"agents/{name}/"):]
+
+            target = project_root / dest_filename
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(zf.read(info.filename))
+            print(f"  ✅ {dest_filename}")
+
+        # Import memory notes (optional)
+        if import_memory and "memory_notes.json" in zf.namelist():
+            notes = json.loads(zf.read("memory_notes.json"))
+            if notes:
+                config = _load_yaml(project_root / "config.yaml")
+                data_dir = project_root / Path(config.get("data_dir", "./data"))
+                db_path = data_dir / f"{name}.db"
+
+                try:
+                    conn = sqlite3.connect(str(db_path))
+                    cursor = conn.cursor()
+
+                    # Create table if not exists
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS memory_notes (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            agent_name TEXT,
+                            user_id TEXT,
+                            key TEXT NOT NULL,
+                            value TEXT NOT NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+
+                    imported = 0
+                    for note in notes:
+                        cursor.execute(
+                            "INSERT INTO memory_notes (agent_name, user_id, key, value) VALUES (?, ?, ?, ?)",
+                            (note.get("agent_name", name), note.get("user_id", ""),
+                             note.get("key", ""), note.get("value", "")),
+                        )
+                        imported += 1
+
+                    conn.commit()
+                    conn.close()
+                    print(f"  🧠 Imported {imported} memory notes")
+                except Exception as e:
+                    print(f"  ⚠️  Could not import memory: {e}")
+        elif import_memory:
+            print("  ℹ️  No memory notes in bundle")
+
+        # Import MCP config (merge into config.yaml agent_overrides)
+        if "mcp_servers.json" in zf.namelist():
+            mcp_servers = json.loads(zf.read("mcp_servers.json"))
+            config_path = project_root / "config.yaml"
+            config_data = _load_yaml(config_path)
+            overrides = config_data.setdefault("agent_overrides", {})
+            agent_section = overrides.setdefault(name, {})
+            agent_section["mcp_servers"] = mcp_servers
+            with open(config_path, "w") as f:
+                yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+            print(f"  🔌 Imported MCP config into config.yaml")
+
+    # Register agent in user_registry.yaml (not system registry)
+    user_registry_path = project_root / "system" / "user_registry.yaml"
+    system_registry_path = project_root / "system" / "registry.yaml"
+
+    # Check both registries
+    all_names = []
+    if system_registry_path.exists():
+        with open(system_registry_path) as f:
+            sys_data = yaml.safe_load(f) or {}
+        all_names.extend(a["name"] for a in sys_data.get("agents", []))
+
+    user_data = {"agents": []}
+    if user_registry_path.exists():
+        with open(user_registry_path) as f:
+            user_data = yaml.safe_load(f) or {"agents": []}
+    all_names.extend(a["name"] for a in user_data.get("agents", []))
+
+    if name not in all_names:
+        # Try to read registry_entry.json from the archive for routing_keys
+        import json as _json
+        entry = {
+            "name": name,
+            "display_name": display_name,
+            "description": manifest.get("description", ""),
+            "routing_keys": [],
+            "status": "active",
+        }
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf2:
+                if "registry_entry.json" in zf2.namelist():
+                    entry = _json.loads(zf2.read("registry_entry.json"))
+        except Exception:
+            pass
+
+        user_data.setdefault("agents", []).append(entry)
+        with open(user_registry_path, "w") as f:
+            yaml.dump(user_data, f, default_flow_style=False, sort_keys=False)
+        print(f"  📝 Registered '{name}' in system/user_registry.yaml")
+    else:
+        print(f"  ℹ️  '{name}' already in registry")
+
+    print()
+    print("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print(f"  🍡 Import complete! Run `mochi-agents` or send /reload to activate.")
+    print()
+
+
+# ---------------------------------------------------------------------------
+# Marketplace Install
+# ---------------------------------------------------------------------------
+
+DEFAULT_MARKETPLACE_URL = "https://github.com/ralph831005/mochi-marketplace/raw/main/agents"
+
+
+def _agent_install() -> None:
+    """Download and import an agent from the marketplace.
+
+    Usage: mochi-agents agent install <name>
+
+    Downloads <name>.agent from the marketplace repo, then runs the import flow.
+    """
+    import tempfile
+    import urllib.request
+
+    if len(sys.argv) < 4:
+        print("Usage: mochi-agents agent install <name>")
+        sys.exit(1)
+
+    name = sys.argv[3]
+    project_root = _find_project_root()
+
+    # Get marketplace URL from config or use default
+    config = _load_yaml(project_root / "config.yaml")
+    user_config_path = project_root / "user_config.yaml"
+    if user_config_path.exists():
+        user_cfg = _load_yaml(user_config_path)
+        config.update(user_cfg)
+    marketplace_url = config.get("marketplace_url", DEFAULT_MARKETPLACE_URL)
+
+    url = f"{marketplace_url}/{name}.agent"
+
+    print()
+    print("🍡 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print(f"    Installing Agent: {name}")
+    print("   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print()
+    print(f"  📥 Downloading from: {url}")
+    print()
+
+    # Download to a temporary file within the workspace
+    tmp_dir = project_root / ".tmp"
+    tmp_dir.mkdir(exist_ok=True)
+    tmp_path = tmp_dir / f"{name}.agent"
+
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "MochiAgent/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            tmp_path.write_bytes(resp.read())
+        print(f"  ✅ Downloaded {tmp_path.stat().st_size:,} bytes")
+        print()
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            print(f"  ❌ Agent '{name}' not found in marketplace.")
+            print(f"     URL: {url}")
+        else:
+            print(f"  ❌ Download failed: HTTP {e.code}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"  ❌ Download failed: {e}")
+        sys.exit(1)
+
+    # Inject the downloaded file path and call import
+    sys.argv = ["mochi-agents", "agent", "import", str(tmp_path)]
+    _agent_import()
+
+    # Clean up
+    try:
+        tmp_path.unlink()
+        tmp_dir.rmdir()
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Reset Command
+# ---------------------------------------------------------------------------
+
+def run_reset() -> None:
+    """Reset agent data with interactive confirmation.
+
+    Modes:
+        mochi-agents reset                Clear ALL agents' conversation history
+        mochi-agents reset <agent>        Clear a specific agent's history
+        mochi-agents reset --all          Full factory reset (all data)
+        mochi-agents reset <agent> --all  Full reset for a specific agent
+    """
+    import sqlite3
+
+    full_reset = "--all" in sys.argv
+    # Check for agent name argument (skip flags)
+    agent_filter = None
+    for arg in sys.argv[2:]:
+        if not arg.startswith("--"):
+            agent_filter = arg
+            break
+
+    project_root = _find_project_root()
+    config = _load_yaml(project_root / "config.yaml")
+    data_dir = project_root / Path(config.get("data_dir", "./data"))
+
+    if not data_dir.exists():
+        print("  No data directory found. Nothing to reset.")
+        return
+
+    # Discover what we'll delete
+    if agent_filter:
+        target = data_dir / f"{agent_filter}.db"
+        if not target.exists():
+            print(f"  ❌ No database found for agent '{agent_filter}'")
+            print(f"  Available: {', '.join(f.stem for f in sorted(data_dir.glob('*.db')))}")
+            sys.exit(1)
+        db_files = [target]
+    else:
+        db_files = sorted(data_dir.glob("*.db"))
+
+    if not db_files:
+        print("  No database files found. Nothing to reset.")
+        return
+
+    print()
+    print("🍡 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    if full_reset:
+        title = f"Full Reset: {agent_filter}" if agent_filter else "Full Factory Reset"
+    else:
+        title = f"Reset: {agent_filter}" if agent_filter else "Reset Conversation History"
+    print(f"     {title}")
+    print("   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print()
+
+    # Show what will be affected
+    for db_path in db_files:
+        agent_name = db_path.stem
+        try:
+            conn = sqlite3.connect(str(db_path))
+            cursor = conn.cursor()
+            tables = [row[0] for row in cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()]
+
+            print(f"  📦 {agent_name}.db")
+            for table in sorted(tables):
+                count = cursor.execute(f"SELECT COUNT(*) FROM [{table}]").fetchone()[0]
+                if full_reset:
+                    action = "DELETE"
+                elif table == "conversation_messages":
+                    action = "DELETE"
+                elif table == "memory_notes":
+                    action = "DELETE"
+                else:
+                    action = "keep"
+
+                icon = "🗑️ " if action == "DELETE" else "  "
+                print(f"    {icon}{table}: {count} rows {'→ DELETE' if action == 'DELETE' else '→ keep'}")
+
+            conn.close()
+        except Exception as e:
+            print(f"  ⚠️  {agent_name}.db: error reading ({e})")
+
+    if full_reset:
+        # Also show non-db files
+        other_files = [f for f in data_dir.rglob("*") if f.is_file() and f.suffix != ".db" and f.name != ".gitkeep"]
+        if other_files:
+            print()
+            print("  📁 Other data files:")
+            for f in other_files:
+                print(f"    🗑️  {f.relative_to(data_dir)} → DELETE")
+
+    print()
+
+    if full_reset:
+        print("  ⚠️  WARNING: This will delete ALL data including")
+        print("  zones, reminders, expirables, shortcuts, and aliases.")
+    else:
+        print("  ℹ️  This will clear conversation history and memory notes only.")
+        print("  Zones, reminders, expirables, and shortcuts will be preserved.")
+
+    print()
+    confirm = input("  Are you sure? Type 'yes' to confirm: ").strip().lower()
+
+    if confirm != "yes":
+        print("  ❌ Reset cancelled.")
+        return
+
+    print()
+
+    # Perform the reset
+    if full_reset:
+        # Delete all db files
+        for db_path in db_files:
+            db_path.unlink()
+            print(f"  🗑️  Deleted {db_path.name}")
+
+        # Delete other data files (but keep .gitkeep)
+        for f in data_dir.rglob("*"):
+            if f.is_file() and f.name != ".gitkeep":
+                f.unlink()
+                print(f"  🗑️  Deleted {f.relative_to(data_dir)}")
+
+        # Remove empty subdirectories
+        for d in sorted(data_dir.rglob("*"), reverse=True):
+            if d.is_dir() and not any(d.iterdir()):
+                d.rmdir()
+    else:
+        # Clear only conversation history and memory notes
+        history_tables = ["conversation_messages", "memory_notes"]
+        for db_path in db_files:
+            try:
+                conn = sqlite3.connect(str(db_path))
+                cursor = conn.cursor()
+                tables = [row[0] for row in cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()]
+
+                cleared = []
+                for table in history_tables:
+                    if table in tables:
+                        cursor.execute(f"DELETE FROM [{table}]")
+                        cleared.append(table)
+
+                conn.commit()
+                conn.close()
+                if cleared:
+                    print(f"  ✅ {db_path.stem}: cleared {', '.join(cleared)}")
+                else:
+                    print(f"  ⏭️  {db_path.stem}: no history tables")
+            except Exception as e:
+                print(f"  ⚠️  {db_path.stem}: error ({e})")
+
+    print()
+    print("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("  🍡 Reset complete! Restart mochi-agents to start fresh.")
+    print()
+
+
+# ---------------------------------------------------------------------------
+# Shell Completions
+# ---------------------------------------------------------------------------
+
+def run_completions() -> None:
+    """Print shell completion script for bash/zsh.
+
+    Usage:
+        eval "$(mochi-agents completions)"        # temporary
+        mochi-agents completions >> ~/.bashrc     # permanent (bash)
+        mochi-agents completions >> ~/.zshrc      # permanent (zsh)
+    """
+    # Dynamically discover agent names
+    project_root = _find_project_root()
+    agents_dir = project_root / "agents"
+    agent_names = []
+    if agents_dir.exists():
+        for d in sorted(agents_dir.iterdir()):
+            if (d / "mission.yaml").exists():
+                agent_names.append(d.name)
+
+    agents_str = " ".join(agent_names)
+
+    script = f'''# mochi-agents bash/zsh completion — auto-generated
+_mochi_agents_completions() {{
+    local cur prev words cword
+    if type _init_completion &>/dev/null; then
+        _init_completion || return
+    else
+        cur="${{COMP_WORDS[COMP_CWORD]}}"
+        prev="${{COMP_WORDS[COMP_CWORD-1]}}"
+        words=("${{COMP_WORDS[@]}}")
+        cword=$COMP_CWORD
+    fi
+
+    local commands="setup config agent reset completions --help"
+    local config_subs="show set set-key del-key"
+    local agent_subs="list info export import remove"
+    local agent_names="{agents_str}"
+
+    case $cword in
+        1)
+            COMPREPLY=($(compgen -W "$commands" -- "$cur"))
+            ;;
+        2)
+            case "$prev" in
+                config)
+                    COMPREPLY=($(compgen -W "$config_subs" -- "$cur"))
+                    ;;
+                agent)
+                    COMPREPLY=($(compgen -W "$agent_subs" -- "$cur"))
+                    ;;
+                reset)
+                    COMPREPLY=($(compgen -W "$agent_names --all" -- "$cur"))
+                    ;;
+            esac
+            ;;
+        3)
+            case "${{words[1]}}" in
+                agent)
+                    case "$prev" in
+                        info|export|remove)
+                            COMPREPLY=($(compgen -W "$agent_names" -- "$cur"))
+                            ;;
+                        import)
+                            COMPREPLY=($(compgen -f -X '!*.agent' -- "$cur"))
+                            ;;
+                    esac
+                    ;;
+                reset)
+                    COMPREPLY=($(compgen -W "--all" -- "$cur"))
+                    ;;
+            esac
+            ;;
+        4)
+            case "${{words[1]}}" in
+                agent)
+                    case "${{words[2]}}" in
+                        export|import)
+                            COMPREPLY=($(compgen -W "--with-memory" -- "$cur"))
+                            ;;
+                    esac
+                    ;;
+            esac
+            ;;
+    esac
+}}
+
+complete -F _mochi_agents_completions mochi-agents
+'''
+    print(script)
 
 
 # ---------------------------------------------------------------------------

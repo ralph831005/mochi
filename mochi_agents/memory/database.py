@@ -56,6 +56,45 @@ async def init_db(agent_name: str, data_dir: Path) -> None:
                 text("ALTER TABLE conversation_messages ADD COLUMN source VARCHAR(20) DEFAULT 'user'")
             )
 
+        # Migration: expirable_items schema evolution
+        # The old table had NOT NULL columns (is_recurring, recurrence_rule) that
+        # the new model doesn't include. We need to recreate the table cleanly.
+        result = await conn.execute(text("PRAGMA table_info(expirable_items)"))
+        columns = [row[1] for row in result]
+        if columns:  # table exists
+            has_old_cols = "is_recurring" in columns
+            has_new_cols = "category" in columns
+            if has_old_cols or not has_new_cols:
+                # Migrate: save data → drop → recreate → restore
+                await conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS _expirable_items_backup AS
+                    SELECT id, user_id, title, description, value, expiration_date, status, created_at
+                    FROM expirable_items
+                """))
+                await conn.execute(text("DROP TABLE expirable_items"))
+                # create_all above will recreate with new schema on next call
+                # But since we're inside begin(), we need to create it now
+                await conn.execute(text("""
+                    CREATE TABLE expirable_items (
+                        id INTEGER NOT NULL PRIMARY KEY,
+                        user_id VARCHAR(50) NOT NULL,
+                        title VARCHAR(200) NOT NULL,
+                        description TEXT,
+                        value FLOAT,
+                        category VARCHAR(50),
+                        expiration_date DATETIME NOT NULL,
+                        status VARCHAR(20) NOT NULL DEFAULT 'active',
+                        created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+                    )
+                """))
+                # Restore any existing data
+                await conn.execute(text("""
+                    INSERT INTO expirable_items (id, user_id, title, description, value, expiration_date, status, created_at)
+                    SELECT id, user_id, title, description, value, expiration_date, status, created_at
+                    FROM _expirable_items_backup
+                """))
+                await conn.execute(text("DROP TABLE _expirable_items_backup"))
+
 
 async def close_all() -> None:
     """Dispose all cached engines (for graceful shutdown)."""

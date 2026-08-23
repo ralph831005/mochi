@@ -24,7 +24,7 @@ def _get_project_root() -> Path:
 
 def get_tools() -> list:
     """Return Learner-specific tools."""
-    return [draft_workflow, draft_agent, draft_mcp_tool, list_existing_skills]
+    return [draft_workflow, draft_agent, draft_mcp_tool, draft_custom_tool, list_existing_skills]
 
 
 async def draft_workflow(
@@ -87,7 +87,7 @@ async def draft_agent(
         routing_keys: Comma-separated keywords. Example: "travel,trip,flight,hotel"
     """
     root = _get_project_root()
-    draft_dir = root / "agents" / f"{name}.draft"
+    draft_dir = root / "custom_agents" / f"{name}.draft"
 
     if draft_dir.exists():
         return {"status": "error", "message": f"Draft already exists: agents/{name}.draft/"}
@@ -177,6 +177,48 @@ async def draft_mcp_tool(
         "status": "drafted",
         "path": f"skills_server/skills/{name}.py.draft",
         "approval": f"Tell the user to type /approve {name} to deploy, or /reject {name} to discard.",
+    }
+
+
+async def draft_custom_tool(
+    name: str,
+    description: str,
+    python_code: str,
+    target_agent: str,
+) -> dict[str, Any]:
+    """Draft a new native Python tool to be added to an existing agent's custom_tools module.
+
+    The python_code MUST provide a standard python function with type hints and a docstring.
+    It MUST also include a helper function `def get_tools(): return [your_function_name]` 
+    at the end of the script so the tool runner can find it.
+
+    Args:
+        name: Tool identifier (lowercase, no spaces). Example: "bmi_calculator"
+        description: What this tool does.
+        python_code: The raw python script implementing the tool.
+        target_agent: Which agent this tool belongs to. Example: "nutritionist"
+    """
+    root = _get_project_root()
+    draft_path = root / "agents" / target_agent / f"custom_tools.py.draft"
+
+    draft_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # If the draft already exists, append to it, otherwise create new
+    mode = "a" if draft_path.exists() else "w"
+    with open(draft_path, mode) as f:
+        if mode == "w":
+            f.write('API_VERSION = "1.0"\n\n')
+            
+        f.write(f"\n\n# --- TOOL: {name} ---\n")
+        f.write(f"# DESCRIPTION: {description}\n\n")
+        f.write(python_code)
+
+    logger.info(f"Learner drafted custom tool for {target_agent}: {draft_path}")
+
+    return {
+        "status": "drafted",
+        "path": f"agents/{target_agent}/custom_tools.py.draft",
+        "approval": f"Tell the user to type /approve {target_agent}_custom_tools to deploy, or /reject.",
     }
 
 

@@ -65,7 +65,116 @@ def get_tools() -> list:
         trigger_restart,
         add_alias,
         remove_alias,
+        toggle_search,
+        toggle_thinking,
     ]
+
+
+async def toggle_search(
+    agent_name: str,
+    enabled: bool,
+) -> dict[str, Any]:
+    """Enable or disable Google Search grounding for an agent.
+
+    When enabled, the agent can search the web for up-to-date information.
+    Changes take effect after /reload.
+
+    Args:
+        agent_name: The agent's internal name. Example: "nutritionist"
+        enabled: True to enable search, False to disable.
+    """
+    from mochi_agents.config import reload_settings
+
+    settings = get_settings()
+    config_path = settings.project_root / "user_config.yaml"
+
+    config_data = {}
+    if config_path.exists():
+        with open(config_path) as f:
+            config_data = yaml.safe_load(f) or {}
+
+    grounding = config_data.setdefault("google_search_grounding", {})
+    exclude = grounding.setdefault("exclude_agents", [])
+
+    if enabled and agent_name in exclude:
+        exclude.remove(agent_name)
+        action = "enabled"
+    elif not enabled and agent_name not in exclude:
+        exclude.append(agent_name)
+        action = "disabled"
+    else:
+        state = "enabled" if agent_name not in exclude else "disabled"
+        return {"status": "no_change", "message": f"Search is already {state} for {agent_name}"}
+
+    with open(config_path, "w") as f:
+        yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+
+    reload_settings()
+    logger.info(f"Admin {action} search for '{agent_name}'")
+
+    return {
+        "status": action,
+        "agent": agent_name,
+        "message": f"Search {action} for {agent_name}. Send /reload to apply.",
+    }
+
+
+async def toggle_thinking(
+    agent_name: str,
+    level: str,
+) -> dict[str, Any]:
+    """Set the thinking/reasoning level for an agent.
+
+    Higher levels produce deeper reasoning but increase latency.
+    Changes take effect after /reload.
+
+    Args:
+        agent_name: The agent's internal name. Example: "learner"
+        level: Thinking level — "off", "minimal", "low", "medium", or "high".
+    """
+    from mochi_agents.config import reload_settings
+
+    valid_levels = {"off", "minimal", "low", "medium", "high"}
+    level = level.lower().strip()
+    if level not in valid_levels:
+        return {"status": "error", "message": f"Invalid level '{level}'. Use: {', '.join(sorted(valid_levels))}"}
+
+    settings = get_settings()
+    config_path = settings.project_root / "user_config.yaml"
+
+    config_data = {}
+    if config_path.exists():
+        with open(config_path) as f:
+            config_data = yaml.safe_load(f) or {}
+
+    thinking = config_data.setdefault("thinking", {})
+    agents_map = thinking.setdefault("agents", {})
+
+    if level == "off":
+        if agent_name in agents_map:
+            del agents_map[agent_name]
+            action = "disabled"
+        else:
+            return {"status": "no_change", "message": f"Thinking is already off for {agent_name}"}
+    else:
+        old_level = agents_map.get(agent_name)
+        if old_level == level:
+            return {"status": "no_change", "message": f"Thinking is already '{level}' for {agent_name}"}
+        agents_map[agent_name] = level
+        action = f"set to '{level}'"
+
+    with open(config_path, "w") as f:
+        yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+
+    reload_settings()
+    logger.info(f"Admin {action} thinking for '{agent_name}'")
+
+    return {
+        "status": "updated",
+        "agent": agent_name,
+        "level": level,
+        "message": f"Thinking {action} for {agent_name}. Send /reload to apply.",
+    }
 
 
 async def add_alias(
@@ -118,11 +227,12 @@ async def create_agent(
         model: LLM model name. Default: gemini-2.0-flash
         temperature: LLM temperature. Default: 0.3
     """
-    root = _get_project_root()
-    agent_dir = root / "agents" / name
+    settings = get_settings()
+    root = settings.resolve_path(".")
+    agent_dir = settings.resolve_path(settings.custom_agents_dir) / name
 
     if agent_dir.exists():
-        return {"status": "error", "message": f"Agent directory already exists: agents/{name}/"}
+        return {"status": "error", "message": f"Agent directory already exists: custom_agents/{name}/"}
 
     # Parse comma-separated values
     alias_list = [a.strip() for a in aliases.split(",") if a.strip()] if aliases else []
@@ -164,11 +274,11 @@ async def create_agent(
     )
     (agent_dir / "mission_prompt.md").write_text(prompt)
 
-    logger.info(f"Created agent scaffold: agents/{name}/")
+    logger.info(f"Created agent scaffold: custom_agents/{name}/")
 
     return {
         "status": "created",
-        "path": f"agents/{name}/",
+        "path": f"custom_agents/{name}/",
         "files": ["mission.yaml", "mission_prompt.md"],
         "next_step": f"Call add_to_registry to register '{name}', then trigger_reload to activate.",
     }
@@ -245,7 +355,7 @@ async def add_to_registry(
     description: str,
     routing_keys: str = "",
 ) -> dict[str, Any]:
-    """Add a new agent entry to system/registry.yaml.
+    """Add a new agent entry to system/user_registry.yaml.
 
     Args:
         name: Agent identifier. Example: "weather"
@@ -254,13 +364,22 @@ async def add_to_registry(
         routing_keys: Comma-separated keywords. Example: "weather,forecast,rain"
     """
     root = _get_project_root()
-    registry_path = root / "system" / "registry.yaml"
+    registry_path = root / "system" / "user_registry.yaml"
 
-    with open(registry_path) as f:
-        data = yaml.safe_load(f) or {"agents": []}
+    data = {"agents": []}
+    if registry_path.exists():
+        with open(registry_path) as f:
+            data = yaml.safe_load(f) or {"agents": []}
 
-    # Check if already registered
-    existing = [a["name"] for a in data.get("agents", [])]
+    # Also check the system registry for duplicates
+    system_registry_path = root / "system" / "registry.yaml"
+    system_names = []
+    if system_registry_path.exists():
+        with open(system_registry_path) as f:
+            system_data = yaml.safe_load(f) or {}
+        system_names = [a["name"] for a in system_data.get("agents", [])]
+
+    existing = [a["name"] for a in data.get("agents", [])] + system_names
     if name in existing:
         return {"status": "error", "message": f"Agent '{name}' is already in the registry"}
 
@@ -278,7 +397,7 @@ async def add_to_registry(
     with open(registry_path, "w") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
-    logger.info(f"Admin added '{name}' to registry")
+    logger.info(f"Admin added '{name}' to user registry")
     return {"status": "registered", "name": name}
 
 

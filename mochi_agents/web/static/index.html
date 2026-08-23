@@ -6,6 +6,8 @@
     <title>🍡 Mochi Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
         :root {
             --bg-primary: #0f0f13;
@@ -709,6 +711,54 @@
             0%, 100% { opacity: 1; }
             50% { opacity: 0.4; }
         }
+
+        /* Bookkeeping */
+        .filter-bar {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .filter-btn {
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.15s;
+            font-family: inherit;
+        }
+
+        .filter-btn:hover { border-color: var(--accent); color: var(--text-primary); }
+        .filter-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
+
+        .status-badge {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .status-badge.active { background: rgba(52, 211, 153, 0.15); color: var(--success); }
+        .status-badge.expiring { background: rgba(251, 191, 36, 0.15); color: var(--warning); }
+        .status-badge.expired { background: rgba(248, 113, 113, 0.15); color: var(--danger); }
+        .status-badge.used { background: rgba(144, 144, 176, 0.15); color: var(--text-muted); }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-muted);
+        }
+
+        .empty-state .empty-icon { font-size: 48px; margin-bottom: 12px; }
+        .empty-state p { font-size: 14px; line-height: 1.6; }
     </style>
 </head>
 <body>
@@ -735,8 +785,14 @@
                 <div class="nav-item" data-page="config">
                     <span class="icon">⚙️</span><span>Config</span>
                 </div>
+                <div class="nav-item" data-page="bookkeeping">
+                    <span class="icon">📋</span><span>Bookkeeping</span>
+                </div>
                 <div class="nav-item" data-page="chat">
                     <span class="icon">💬</span><span>Chat</span>
+                </div>
+                <div class="nav-item" data-page="zones">
+                    <span class="icon">🗺️</span><span>Zones</span>
                 </div>
             </nav>
         </aside>
@@ -826,6 +882,24 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Bookkeeping page -->
+            <div id="page-bookkeeping" class="page">
+                <h1 class="page-title">Bookkeeping</h1>
+                <p class="page-subtitle">Track credits, coupons, subscriptions & expirable items</p>
+                <div class="stat-grid" id="bookkeeping-stats"></div>
+                <div class="filter-bar" id="bookkeeping-filters"></div>
+                <div id="bookkeeping-content"></div>
+            </div>
+
+            <!-- Zones map page -->
+            <div id="page-zones" class="page">
+                <h1 class="page-title">Geofence Zones</h1>
+                <p class="page-subtitle">Your registered location zones and reminders</p>
+                <div class="stat-grid" id="zones-stats"></div>
+                <div id="zones-map" style="height: 500px; border-radius: var(--radius); border: 1px solid var(--border); margin-top: 16px;"></div>
+                <div id="zones-list" style="margin-top: 16px;"></div>
+            </div>
         </main>
     </div>
 
@@ -881,7 +955,9 @@
             case 'aliases': return loadAliases();
             case 'schedules': return loadSchedules();
             case 'config': return loadConfig();
+            case 'bookkeeping': return loadBookkeeping();
             case 'chat': return initChat();
+            case 'zones': return loadZones();
         }
     }
 
@@ -1791,6 +1867,287 @@
         });
     }
 
+    // ---------------------------------------------------------------------------
+    // Bookkeeping page
+    // ---------------------------------------------------------------------------
+    let _bookkeepingData = null;
+    let _bookkeepingFilter = 'all';
+
+    async function loadBookkeeping() {
+        const content = document.getElementById('bookkeeping-content');
+        content.innerHTML = '<div class="loading">Loading expirables</div>';
+
+        try {
+            _bookkeepingData = await api('GET', '/api/expirables');
+        } catch (e) {
+            content.innerHTML = '<div class="loading">Failed to load</div>';
+            return;
+        }
+
+        const s = _bookkeepingData.summary || {};
+
+        // Stat cards
+        document.getElementById('bookkeeping-stats').innerHTML = `
+            <div class="stat-card">
+                <div class="stat-label">Active</div>
+                <div class="stat-value">${s.active || 0}</div>
+                <div class="stat-sub">${s.total || 0} total items</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Expiring Soon</div>
+                <div class="stat-value" style="color:var(--warning)">${s.expiring_soon || 0}</div>
+                <div class="stat-sub">Within 7 days</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Value at Risk</div>
+                <div class="stat-value" style="color:var(--danger)">$${(s.total_value_at_risk || 0).toFixed(2)}</div>
+                <div class="stat-sub">Expiring soon</div>
+            </div>
+        `;
+
+        // Filter bar
+        const filters = ['all', 'active', 'expiring', 'used', 'expired'];
+        const filterLabels = { all: 'All', active: 'Active', expiring: '⚠ Expiring ≤7d', used: 'Used', expired: 'Expired' };
+        document.getElementById('bookkeeping-filters').innerHTML = filters.map(f =>
+            `<button class="filter-btn ${_bookkeepingFilter === f ? 'active' : ''}" onclick="filterBookkeeping('${f}')">${filterLabels[f]}</button>`
+        ).join('');
+
+        renderBookkeepingTable();
+    }
+
+    function filterBookkeeping(filter) {
+        _bookkeepingFilter = filter;
+        // Update button states
+        document.querySelectorAll('#bookkeeping-filters .filter-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.textContent.toLowerCase().includes(filter) ||
+                (filter === 'all' && btn.textContent === 'All') ||
+                (filter === 'expiring' && btn.textContent.includes('Expiring')));
+        });
+        // Re-render with new filter
+        const filters = ['all', 'active', 'expiring', 'used', 'expired'];
+        const filterLabels = { all: 'All', active: 'Active', expiring: '⚠ Expiring ≤7d', used: 'Used', expired: 'Expired' };
+        document.getElementById('bookkeeping-filters').innerHTML = filters.map(f =>
+            `<button class="filter-btn ${_bookkeepingFilter === f ? 'active' : ''}" onclick="filterBookkeeping('${f}')">${filterLabels[f]}</button>`
+        ).join('');
+        renderBookkeepingTable();
+    }
+
+    function renderBookkeepingTable() {
+        const content = document.getElementById('bookkeeping-content');
+        if (!_bookkeepingData || !_bookkeepingData.items) {
+            content.innerHTML = '<div class="empty-state"><div class="empty-icon">📋</div><p>No expirable items yet.<br>Talk to Sora to add credits, coupons, or subscriptions.</p></div>';
+            return;
+        }
+
+        let items = _bookkeepingData.items;
+
+        // Apply filter
+        switch (_bookkeepingFilter) {
+            case 'active':
+                items = items.filter(i => i.status === 'active');
+                break;
+            case 'expiring':
+                items = items.filter(i => i.status === 'active' && i.days_left <= 7);
+                break;
+            case 'used':
+                items = items.filter(i => i.status === 'used');
+                break;
+            case 'expired':
+                items = items.filter(i => i.status === 'expired');
+                break;
+        }
+
+        if (items.length === 0) {
+            content.innerHTML = `<div class="empty-state"><div class="empty-icon">🔍</div><p>No items match this filter.</p></div>`;
+            return;
+        }
+
+        function getStatusBadge(item) {
+            if (item.status === 'used') return '<span class="status-badge used">Used</span>';
+            if (item.status === 'expired') return '<span class="status-badge expired">Expired</span>';
+            if (item.days_left <= 7) return '<span class="status-badge expiring">Expiring</span>';
+            return '<span class="status-badge active">Active</span>';
+        }
+
+        function formatDate(iso) {
+            if (!iso) return '—';
+            const d = new Date(iso);
+            return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        }
+
+        function formatDaysLeft(item) {
+            if (item.status !== 'active') return '—';
+            if (item.days_left === 0) return '<strong style="color:var(--danger)">Today!</strong>';
+            if (item.days_left <= 3) return `<strong style="color:var(--danger)">${item.days_left}d</strong>`;
+            if (item.days_left <= 7) return `<strong style="color:var(--warning)">${item.days_left}d</strong>`;
+            return `${item.days_left}d`;
+        }
+
+        const rows = items.map(i => `
+            <tr>
+                <td><strong>${i.title}</strong>${i.description ? `<br><span style="color:var(--text-muted);font-size:11px">${i.description}</span>` : ''}</td>
+                <td>${i.category ? `<span class="tag">${i.category}</span>` : '—'}</td>
+                <td>${i.value != null ? `$${i.value.toFixed(2)}` : '—'}</td>
+                <td>${formatDate(i.expiration_date)}</td>
+                <td>${formatDaysLeft(i)}</td>
+                <td>${getStatusBadge(i)}</td>
+            </tr>
+        `).join('');
+
+        content.innerHTML = `
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Title</th>
+                            <th>Category</th>
+                            <th>Value</th>
+                            <th>Expires</th>
+                            <th>Days Left</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        `;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Zones Map
+    // ---------------------------------------------------------------------------
+    let zonesMap = null;
+    let zonesLayer = null;
+
+    async function loadZones() {
+        const data = await api('GET', '/api/zones');
+        const zones = data.zones || [];
+
+        // Stats
+        const totalReminders = zones.reduce((n, z) => n + (z.reminders?.length || 0), 0);
+        document.getElementById('zones-stats').innerHTML = `
+            <div class="stat-card">
+                <div class="stat-label">Zones</div>
+                <div class="stat-value">${zones.length}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Reminders</div>
+                <div class="stat-value">${totalReminders}</div>
+            </div>
+        `;
+
+        // Initialize map once
+        const mapContainer = document.getElementById('zones-map');
+        if (!zonesMap) {
+            zonesMap = L.map(mapContainer, {
+                zoomControl: true,
+                attributionControl: true,
+            }).setView([37.4, -122.1], 12);
+
+            // Dark-themed tiles
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                attribution: '&copy; OpenStreetMap &copy; CARTO',
+                maxZoom: 19,
+            }).addTo(zonesMap);
+
+            zonesLayer = L.layerGroup().addTo(zonesMap);
+        }
+
+        // Force map resize (fixes grey tiles when tab was hidden)
+        setTimeout(() => zonesMap.invalidateSize(), 100);
+
+        // Clear existing markers
+        zonesLayer.clearLayers();
+
+        if (zones.length === 0) {
+            document.getElementById('zones-list').innerHTML = `
+                <div class="card" style="text-align:center; padding:32px; color:var(--text-muted);">
+                    No zones registered. Use Sora to create zones:
+                    <br><code style="color:var(--accent);">"Set a zone called home at 123 Main St"</code>
+                </div>
+            `;
+            return;
+        }
+
+        // Add zones to map
+        const bounds = [];
+        zones.forEach(z => {
+            const latlng = [z.latitude, z.longitude];
+            bounds.push(latlng);
+
+            // Zone circle
+            const circle = L.circle(latlng, {
+                radius: z.radius_m,
+                color: '#7c5cfc',
+                fillColor: '#7c5cfc',
+                fillOpacity: 0.15,
+                weight: 2,
+            }).addTo(zonesLayer);
+
+            // Popup content
+            const reminderList = (z.reminders || []).map(r =>
+                `<div style="font-size:12px; margin:2px 0;">
+                    ${r.trigger === 'enter' ? '📍' : '🚶'} ${r.message}
+                </div>`
+            ).join('') || '<span style="color:#9090b0;">No reminders</span>';
+
+            circle.bindPopup(`
+                <div style="font-family:Inter,sans-serif; min-width:180px;">
+                    <strong style="font-size:14px;">${z.name}</strong>
+                    <div style="font-size:12px; color:#9090b0; margin:4px 0;">
+                        ${z.latitude.toFixed(5)}, ${z.longitude.toFixed(5)} · ${z.radius_m}m
+                    </div>
+                    <hr style="border:none; border-top:1px solid #2e2e4a; margin:6px 0;">
+                    ${reminderList}
+                </div>
+            `);
+
+            // Zone label
+            L.marker(latlng, {
+                icon: L.divIcon({
+                    className: '',
+                    html: `<div style="
+                        background: #22223a;
+                        color: #e8e8f0;
+                        padding: 3px 8px;
+                        border-radius: 6px;
+                        font-size: 12px;
+                        font-family: Inter, sans-serif;
+                        font-weight: 600;
+                        border: 1px solid #7c5cfc;
+                        white-space: nowrap;
+                        box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+                    ">${z.name}</div>`,
+                    iconAnchor: [0, -z.radius_m / 10],
+                }),
+            }).addTo(zonesLayer);
+        });
+
+        // Fit map to show all zones
+        if (bounds.length > 0) {
+            zonesMap.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+        }
+
+        // Zone list below map
+        const rows = zones.map(z => {
+            const rCount = z.reminders?.length || 0;
+            return `
+                <div class="card" style="display:flex; justify-content:space-between; align-items:center; padding:14px 18px; margin-bottom:8px;">
+                    <div>
+                        <strong>${z.name}</strong>
+                        <span style="color:var(--text-muted); margin-left:8px;">${z.latitude.toFixed(4)}, ${z.longitude.toFixed(4)}</span>
+                    </div>
+                    <div style="display:flex; gap:16px; align-items:center;">
+                        <span style="color:var(--text-secondary);">⭕ ${z.radius_m}m</span>
+                        <span style="color:${rCount > 0 ? 'var(--accent)' : 'var(--text-muted)'};">🔔 ${rCount}</span>
+                    </div>
+                </div>
+            `;
+        }).join('');
+        document.getElementById('zones-list').innerHTML = rows;
+    }
+
     </script>
+
 </body>
 </html>

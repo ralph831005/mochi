@@ -1,6 +1,33 @@
 """Scheduler — runs recurring cron jobs and one-off scheduled tasks.
 
 Runs as a parallel asyncio task alongside the polling loop.
+
+Cron schedules in mission.yaml support two modes:
+
+1. **LLM mode** (default): sends the action as text prompt to the agent.
+   ```yaml
+   schedules:
+     - name: check_expiring_items
+       cron: "0 9 * * *"
+       action: check_expiring_items
+       target_user_ids: all
+   ```
+
+2. **Direct tool mode**: calls a tool function directly with args.
+   Supports dynamic date templates: {end_of_month}, {start_of_next_month}.
+   ```yaml
+   schedules:
+     - name: monthly_uber_credit
+       cron: "0 0 1 * *"
+       action: add_expirable
+       mode: tool
+       args:
+         title: "Uber Credit"
+         value: 25.0
+         category: "credit"
+         expiration_date: "{end_of_month}"
+       target_user_ids: all
+   ```
 """
 
 from __future__ import annotations
@@ -40,28 +67,50 @@ class Scheduler:
         self._tick_interval = 30  # seconds
 
     def load_cron_jobs(self) -> None:
-        """Scan all agent mission files for `schedules` blocks."""
+        """Scan agent mission files AND config.yaml for cron schedules.
+
+        Two sources are merged:
+        1. Agent mission.yaml `schedules` blocks — framework defaults (committed)
+        2. config.yaml `schedules` list — user-specific (not committed)
+
+        Config schedules require an `agent` key to specify the target agent.
+        """
         settings = get_settings()
         agents_dir = settings.resolve_path(settings.agents_dir)
         self._cron_jobs.clear()
 
-        if not agents_dir.exists():
-            return
+        # Source 1: Agent mission.yaml files
+        if agents_dir.exists():
+            for mission_path in agents_dir.glob("*/mission.yaml"):
+                agent_name = mission_path.parent.name
+                with open(mission_path) as f:
+                    mission = yaml.safe_load(f) or {}
 
-        for mission_path in agents_dir.glob("*/mission.yaml"):
-            agent_name = mission_path.parent.name
-            with open(mission_path) as f:
-                mission = yaml.safe_load(f) or {}
+                for schedule in mission.get("schedules", []):
+                    self._register_job(agent_name, schedule, source="mission")
 
-            for schedule in mission.get("schedules", []):
-                self._cron_jobs.append({
-                    "agent_name": agent_name,
-                    "name": schedule.get("name", "unnamed"),
-                    "cron": schedule["cron"],
-                    "action": schedule.get("action", ""),
-                    "target_user_ids": schedule.get("target_user_ids", "all"),
-                })
-                logger.info(f"Registered cron job: {schedule.get('name')} ({schedule['cron']}) for {agent_name}")
+        # Source 2: config.yaml user schedules
+        for schedule in settings.schedules:
+            agent_name = schedule.get("agent", "")
+            if not agent_name:
+                logger.warning(f"Skipping config schedule '{schedule.get('name', '?')}' — missing 'agent' key")
+                continue
+            self._register_job(agent_name, schedule, source="config")
+
+    def _register_job(self, agent_name: str, schedule: dict, source: str = "mission") -> None:
+        """Register a single cron job from a schedule dict."""
+        job = {
+            "agent_name": agent_name,
+            "name": schedule.get("name", "unnamed"),
+            "cron": schedule["cron"],
+            "action": schedule.get("action", ""),
+            "mode": schedule.get("mode", "llm"),  # "llm" or "tool"
+            "args": schedule.get("args", {}),
+            "target_user_ids": schedule.get("target_user_ids", "all"),
+        }
+        self._cron_jobs.append(job)
+        mode_label = "tool" if job["mode"] == "tool" else "llm"
+        logger.info(f"Registered cron job: {job['name']} ({job['cron']}) [{mode_label}] for {agent_name} [from {source}]")
 
     async def run(self) -> None:
         """Main scheduler loop — checks cron jobs and one-off jobs every tick."""
@@ -91,20 +140,104 @@ class Scheduler:
             next_fire = cron.get_next(datetime).replace(tzinfo=timezone.utc)
 
             if next_fire <= now:
-                logger.info(f"Cron job firing: {job['name']} for agent {job['agent_name']}")
+                logger.info(f"Cron job firing: {job['name']} for agent {job['agent_name']} (mode={job.get('mode', 'llm')})")
                 self._last_cron_check[key] = now
 
                 try:
-                    user_id = self._resolve_target_user_id(job["target_user_ids"])
-                    response = await self.runtime.execute(
-                        job["agent_name"],
-                        f"[SCHEDULED] Execute action: {job['action']}",
-                        user_id=user_id,
-                        source="scheduler",
-                    )
-                    await self._send_to_targets(job["target_user_ids"], f"📋 {response}")
+                    if job.get("mode") == "tool":
+                        await self._execute_tool_job(job)
+                    else:
+                        await self._execute_llm_job(job)
                 except Exception as e:
                     logger.error(f"Cron job failed: {job['name']}: {e}", exc_info=True)
+
+    async def _execute_llm_job(self, job: dict) -> None:
+        """Execute a cron job by sending it as text to the LLM agent."""
+        user_id = self._resolve_target_user_id(job["target_user_ids"])
+        response = await self.runtime.execute(
+            job["agent_name"],
+            f"[SCHEDULED] Execute action: {job['action']}",
+            user_id=user_id,
+            source="scheduler",
+        )
+        if response and response.strip():
+            await self._send_to_targets(job["target_user_ids"], f"📋 {response}")
+
+    async def _execute_tool_job(self, job: dict) -> None:
+        """Execute a cron job by calling a tool function directly with args."""
+        tool_name = job["action"]
+        raw_args = dict(job.get("args", {}))
+
+        # Resolve dynamic date templates
+        resolved_args = {k: self._resolve_template(v) for k, v in raw_args.items()}
+
+        # Inject user_id
+        user_id = self._resolve_target_user_id(job["target_user_ids"])
+        resolved_args["user_id"] = user_id
+
+        logger.info(f"Tool job: {tool_name}({resolved_args})")
+        result = await self.runtime.tool_runner.execute(
+            job["agent_name"], tool_name, resolved_args
+        )
+
+        if result.success:
+            msg = f"✅ Auto-created: **{resolved_args.get('title', tool_name)}**"
+            if resolved_args.get('value'):
+                msg += f" (${resolved_args['value']})"
+            if resolved_args.get('expiration_date'):
+                msg += f" — expires {resolved_args['expiration_date']}"
+            await self._send_to_targets(job["target_user_ids"], msg)
+        else:
+            logger.error(f"Tool job {tool_name} failed: {result.error}")
+
+    @staticmethod
+    def _resolve_template(value: Any) -> Any:
+        """Resolve dynamic date templates in string values.
+
+        Supported templates:
+            {end_of_month}          - last day of current month (YYYY-MM-DD)
+            {start_of_next_month}   - first day of next month (YYYY-MM-DD)
+            {today}                 - today's date (YYYY-MM-DD)
+            {today+N}               - N days from today (YYYY-MM-DD)
+
+        All dates use the configured local timezone.
+        """
+        import calendar
+        import re
+
+        if not isinstance(value, str) or "{" not in value:
+            return value
+
+        settings = get_settings()
+        local_tz = settings.get_tz()
+        now = datetime.now(local_tz)
+
+        replacements = {
+            "{today}": now.strftime("%Y-%m-%d"),
+            "{end_of_month}": now.replace(
+                day=calendar.monthrange(now.year, now.month)[1]
+            ).strftime("%Y-%m-%d"),
+        }
+
+        # {start_of_next_month}
+        if now.month == 12:
+            next_month = now.replace(year=now.year + 1, month=1, day=1)
+        else:
+            next_month = now.replace(month=now.month + 1, day=1)
+        replacements["{start_of_next_month}"] = next_month.strftime("%Y-%m-%d")
+
+        for template, resolved in replacements.items():
+            value = value.replace(template, resolved)
+
+        # {today+N} pattern
+        match = re.search(r"\{today\+(\d+)\}", value)
+        if match:
+            from datetime import timedelta
+            days = int(match.group(1))
+            future = (now + timedelta(days=days)).strftime("%Y-%m-%d")
+            value = re.sub(r"\{today\+\d+\}", future, value)
+
+        return value
 
     async def _check_oneoff_jobs(self) -> None:
         """Check for pending one-off jobs that are due."""

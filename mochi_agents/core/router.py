@@ -257,6 +257,12 @@ class Router:
 
     async def _delegate_to_manager(self, text: str, user_id: str = "") -> str:
         """Use the Manager agent to determine routing, then execute the chosen agent."""
+        from pydantic import BaseModel, Field
+
+        class RoutingDecision(BaseModel):
+            route_to: str = Field(description="Agent name to route to, or 'none' if no agent can handle it")
+            reason: str = Field(description="Brief explanation of routing choice")
+
         # Give the Manager the registry summary as context
         registry_summary = self.registry.get_registry_summary()
         workflow_summary = self.workflow_engine.get_workflow_summary() if self.workflow_engine else ""
@@ -269,12 +275,20 @@ class Router:
             text,
             extra_context=extra_context,
             user_id=user_id,
+            response_schema=RoutingDecision,
         )
 
-        # Try to parse routing decision from Manager's response
-        route_to = self._parse_routing_decision(manager_response)
+        # Parse the structured JSON response
+        route_to = None
+        try:
+            data = json.loads(manager_response)
+            route_to = data.get("route_to", "").lower().strip()
+            reason = data.get("reason", "")
+            logger.info(f"Manager routing decision: {route_to} — {reason}")
+        except (json.JSONDecodeError, ValueError):
+            logger.warning(f"Manager returned non-JSON: {manager_response[:100]}")
 
-        if route_to and route_to != "manager":
+        if route_to and route_to not in ("manager", "none", ""):
             # Check if it's a workflow
             if self.workflow_engine and self.workflow_engine.get_workflow(route_to):
                 logger.info(f"Manager routed → workflow '{route_to}'")
@@ -287,7 +301,7 @@ class Router:
                 return await self.runtime.execute(agent.name, text, user_id=user_id)
 
         # If Manager says no agent can handle it, delegate to Learner
-        if route_to == "none" or "no agent" in manager_response.lower() or "doesn't exist" in manager_response.lower():
+        if route_to == "none":
             learner = self.registry.get_agent("learner")
             if learner:
                 logger.info("No agent found — delegating to Learner")
@@ -295,20 +309,6 @@ class Router:
 
         # Manager handled it directly (conversational — no session started)
         return manager_response
-
-    def _parse_routing_decision(self, response: str) -> str | None:
-        """Try to extract a route_to decision from the Manager's response."""
-        # Look for JSON block in the response
-        try:
-            # Try to find JSON in the response
-            start = response.find("{")
-            end = response.rfind("}") + 1
-            if start >= 0 and end > start:
-                data = json.loads(response[start:end])
-                return data.get("route_to")
-        except (json.JSONDecodeError, ValueError):
-            pass
-        return None
 
     async def _handle_reload(self) -> str:
         """Handle the /reload system command."""
@@ -423,42 +423,36 @@ class Router:
             target_file = mcp_draft.with_suffix("") # Remove .draft
             shutil.move(str(mcp_draft), str(target_file))
             
-            # 3. Update agent's mission.yaml
-            mission_path = root / "agents" / target_agent / "mission.yaml"
-            if mission_path.exists():
-                import yaml as _yaml
+            # 3. Update agent's config via config.yaml overrides (not mission.yaml)
+            from mochi_agents.config import get_settings, save_agent_override
 
-                with open(mission_path, "r") as f:
-                    mission_data = _yaml.safe_load(f) or {}
+            settings = get_settings()
+            overrides = settings.agent_overrides.get(target_agent, {})
+            servers = overrides.get("mcp_servers", [{"url": "http://127.0.0.1:8001"}])
 
-                servers = mission_data.setdefault("mcp_servers", [{"url": "http://127.0.0.1:8001"}])
+            # Find the localhost 8001 server
+            server_entry = None
+            for entry in servers:
+                if isinstance(entry, str) and entry == "http://127.0.0.1:8001":
+                    idx = servers.index(entry)
+                    servers[idx] = {"url": "http://127.0.0.1:8001"}
+                    server_entry = servers[idx]
+                    break
+                elif isinstance(entry, dict) and entry.get("url") == "http://127.0.0.1:8001":
+                    server_entry = entry
+                    break
 
-                # Find the localhost 8001 server
-                server_entry = None
-                for entry in servers:
-                    if isinstance(entry, str) and entry == "http://127.0.0.1:8001":
-                        # Convert string format to dict to support whitelisting
-                        idx = servers.index(entry)
-                        servers[idx] = {"url": "http://127.0.0.1:8001"}
-                        server_entry = servers[idx]
-                        break
-                    elif isinstance(entry, dict) and entry.get("url") == "http://127.0.0.1:8001":
-                        server_entry = entry
-                        break
+            if not server_entry:
+                server_entry = {"url": "http://127.0.0.1:8001"}
+                servers.append(server_entry)
 
-                if not server_entry:
-                    server_entry = {"url": "http://127.0.0.1:8001"}
-                    servers.append(server_entry)
+            # Add tool to whitelist
+            tools_list = server_entry.setdefault("tools", [])
+            if name not in tools_list:
+                tools_list.append(name)
 
-                # Add tool to whitelist if tools list exists, if not, create it
-                tools_list = server_entry.setdefault("tools", [])
-                if name not in tools_list:
-                    tools_list.append(name)
-
-                with open(mission_path, "w") as f:
-                    _yaml.dump(mission_data, f, default_flow_style=False, sort_keys=False)
-                    
-                logger.info(f"Updated {target_agent} mission.yaml with new MCP tool {name}")
+            save_agent_override(target_agent, "mcp_servers", servers)
+            logger.info(f"Updated {target_agent} config.yaml override with new MCP tool {name}")
                 
             return await self._handle_restart()
 

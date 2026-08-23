@@ -28,6 +28,22 @@ from mochi_agents.memory.models import ConversationMessage
 
 logger = logging.getLogger(__name__)
 
+# Retry config for transient API errors (e.g., 503 overload)
+_RETRY_DELAYS = [60, 90, 120]  # seconds between retries
+
+# Context variable for notifying the user before retries
+import contextvars
+_retry_notify_callback: contextvars.ContextVar = contextvars.ContextVar(
+    "_retry_notify_callback", default=None
+)
+
+def set_retry_notify(callback) -> None:
+    """Set an async callback to notify the user before retrying.
+
+    The callback signature: async def callback(attempt: int, delay: int) -> None
+    """
+    _retry_notify_callback.set(callback)
+
 
 class AgentRuntime:
     """Executes an agent: assembles context, calls LLM, runs tools, persists memory."""
@@ -38,18 +54,33 @@ class AgentRuntime:
         self._model_overrides: dict[str, dict[str, Any]] = {}  # runtime overrides
 
     def load_mission(self, agent_name: str) -> dict[str, Any]:
-        """Load and cache an agent's mission.yaml."""
+        """Load and cache an agent's mission.yaml, merged with config.yaml overrides."""
         settings = get_settings()
         agents_dir = settings.resolve_path(settings.agents_dir)
+        custom_agents_dir = settings.resolve_path(settings.custom_agents_dir)
+
+        # Search primary agents dir first, then custom_agents dir
         mission_path = agents_dir / agent_name / "mission.yaml"
+        if not mission_path.exists():
+            mission_path = custom_agents_dir / agent_name / "mission.yaml"
 
         with open(mission_path) as f:
             mission = yaml.safe_load(f) or {}
 
-        # Load mission_prompt.md if it exists
+        # Load mission_prompt.md if it exists (check both dirs)
         prompt_path = agents_dir / agent_name / "mission_prompt.md"
+        if not prompt_path.exists():
+            prompt_path = custom_agents_dir / agent_name / "mission_prompt.md"
         if prompt_path.exists():
             mission["mission_prompt"] = prompt_path.read_text()
+
+        # Merge config.yaml agent_overrides on top of mission defaults
+        overrides = settings.agent_overrides.get(agent_name, {})
+        for key, value in overrides.items():
+            if isinstance(value, dict) and isinstance(mission.get(key), dict):
+                mission[key].update(value)  # deep merge for dicts (e.g., model_config)
+            else:
+                mission[key] = value  # replace for lists/scalars (e.g., mcp_servers)
 
         self._mission_cache[agent_name] = mission
         return mission
@@ -85,27 +116,17 @@ class AgentRuntime:
             self._model_overrides.clear()
 
     def update_model_config(self, agent_name: str, updates: dict[str, Any]) -> dict[str, Any]:
-        """Permanently update an agent's model_config in mission.yaml."""
-        settings = get_settings()
-        mission_path = settings.resolve_path(settings.agents_dir) / agent_name / "mission.yaml"
-        
-        if not mission_path.exists():
-            raise FileNotFoundError(f"Mission file not found for agent '{agent_name}'")
+        """Permanently update an agent's model_config via config.yaml overrides.
 
-        with open(mission_path) as f:
-            mission = yaml.safe_load(f) or {}
+        Writes to config.yaml (user-specific) instead of mission.yaml (committed defaults).
+        """
+        from mochi_agents.config import save_agent_override
 
-        if "model_config" not in mission:
-            mission["model_config"] = {}
-
-        mission["model_config"].update(updates)
-
-        with open(mission_path, "w") as f:
-            yaml.dump(mission, f, sort_keys=False)
+        save_agent_override(agent_name, "model_config", updates)
 
         # Clear ephemeral overrides so the new base applies immediately
         self.clear_model_overrides(agent_name)
-        
+
         # Reload cache
         return self.load_mission(agent_name)
 
@@ -119,11 +140,20 @@ class AgentRuntime:
 
     async def _build_system_instruction(self, agent_name: str, extra_context: str = "", user_id: str = "") -> str:
         """Assemble system instruction = Soul + Mission + Memory Notes + Summary + Context Data + extra."""
+        from datetime import datetime
+        from mochi_agents.config import get_settings
+
         soul = self._load_soul()
         mission = self.get_mission(agent_name)
         mission_prompt = mission.get("mission_prompt", "")
 
         parts = [soul, mission_prompt]
+
+        # Inject current date/time so the LLM never guesses the wrong year
+        settings = get_settings()
+        local_tz = settings.get_tz()
+        now = datetime.now(local_tz)
+        parts.append(f"**Current date:** {now.strftime('%A, %B %d, %Y')} ({settings.timezone})")
 
         # Inject persistent memory notes (profile, goals, preferences)
         memory_notes = await self._load_memory_notes(agent_name)
@@ -379,9 +409,8 @@ class AgentRuntime:
         client = create_client(model_config)
         model_name = get_model_name(model_config)
 
-        summary_response = await client.aio.models.generate_content(
-            model=model_name,
-            contents=summarize_prompt,
+        summary_response = await self._generate_with_retry(
+            client, model_name, summarize_prompt,
             config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=1024),
         )
 
@@ -429,13 +458,13 @@ class AgentRuntime:
         We pass schemas instead of callables so the SDK doesn't try
         to auto-call them (which fails with async functions).
         We handle tool execution manually via the ToolRunner.
+
+        Also injects Google Search grounding for eligible agents.
         """
         declarations = self.tool_runner.get_tool_declarations(agent_name)
-        if not declarations:
-            return None
 
         func_declarations = []
-        for decl in declarations:
+        for decl in (declarations or []):
             # Build parameter schema from type hints
             properties = {}
             required = []
@@ -465,7 +494,18 @@ class AgentRuntime:
                 )
             )
 
-        return [types.Tool(function_declarations=func_declarations)]
+        tools = []
+        if func_declarations:
+            tools.append(types.Tool(function_declarations=func_declarations))
+
+        # Add Google Search grounding for eligible agents
+        settings = get_settings()
+        grounding_cfg = settings.google_search_grounding
+        exclude_agents = grounding_cfg.get("exclude_agents", [])
+        if grounding_cfg and agent_name not in exclude_agents:
+            tools.append(types.Tool(google_search=types.GoogleSearch()))
+
+        return tools if tools else None
 
     @staticmethod
     def _python_type_to_schema(hint: Any) -> dict:
@@ -482,6 +522,68 @@ class AgentRuntime:
                 return {"type": schema_type}
         return {"type": "STRING"}
 
+    async def _extract_url_context(
+        self,
+        agent_name: str,
+        user_message: str,
+        model_config: dict,
+    ) -> str | None:
+        """Extract content from URLs in the user message via Gemini's URL Context tool.
+
+        Makes a separate API call with the url_context tool (which is incompatible
+        with function calling), then returns a text summary for the main agent call.
+
+        Returns None if no URLs found, agent is excluded, or extraction fails.
+        """
+        import re as _re
+
+        # Check if agent has URL context enabled
+        settings = get_settings()
+        url_cfg = settings.url_context
+        exclude_agents = url_cfg.get("exclude_agents", [])
+        if not url_cfg or agent_name in exclude_agents:
+            return None
+
+        # Detect URLs in the message
+        url_pattern = _re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+')
+        urls = url_pattern.findall(user_message)
+        if not urls:
+            return None
+
+        logger.info(f"URL Context: extracting content from {len(urls)} URL(s) for '{agent_name}'")
+
+        try:
+            client = create_client(model_config)
+            model_name = get_model_name(model_config)
+
+            # Build a prompt asking the model to summarize the URL content
+            url_list = "\n".join(f"- {url}" for url in urls[:5])  # cap at 5 URLs
+            prompt = (
+                f"Read and summarize the content from the following URL(s). "
+                f"Extract the key information that would be useful for the user's request.\n\n"
+                f"{url_list}"
+            )
+
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(url_context=types.UrlContext())],
+                    temperature=0.1,
+                    max_output_tokens=2048,
+                ),
+            )
+
+            summary = response.text
+            if summary:
+                logger.info(f"URL Context: extracted {len(summary)} chars from {len(urls)} URL(s)")
+                return summary
+
+        except Exception as e:
+            logger.warning(f"URL Context: extraction failed for '{agent_name}': {e}")
+
+        return None
+
     async def execute(
         self,
         agent_name: str,
@@ -490,8 +592,15 @@ class AgentRuntime:
         user_id: str = "",
         source: str = "user",
         _delegation_depth: int = 0,
+        response_schema: Any = None,
     ) -> str:
-        """Execute an agent with a user message. Returns the final response text."""
+        """Execute an agent with a user message. Returns the final response text.
+
+        Args:
+            response_schema: Optional Pydantic model class for structured JSON output.
+                When set, the model returns guaranteed JSON matching the schema.
+                Tool calling is disabled in structured output mode.
+        """
         # Set context for shared tools (delegation, memory)
         from mochi_agents.core.shared_tools import set_current_runtime, set_current_depth
         set_current_runtime(self)
@@ -516,10 +625,17 @@ class AgentRuntime:
                     )
                 )
 
+        # URL Context pre-processing: extract web page content if URLs detected
+        enriched_message = user_message
+        if not response_schema:  # skip for structured-output calls (e.g. Manager routing)
+            url_summary = await self._extract_url_context(agent_name, user_message, model_config)
+            if url_summary:
+                enriched_message = f"{user_message}\n\n---\n📄 **Content from linked URLs:**\n{url_summary}"
+
         contents.append(
             types.Content(
                 role="user",
-                parts=[types.Part.from_text(text=user_message)],
+                parts=[types.Part.from_text(text=enriched_message)],
             )
         )
 
@@ -540,20 +656,44 @@ class AgentRuntime:
             system_instruction=system_instruction,
             temperature=gen_config.temperature,
             max_output_tokens=gen_config.max_output_tokens,
-            tools=tool_declarations,
+            tools=tool_declarations if not response_schema else None,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
 
+        # Structured output mode: force JSON response matching schema
+        if response_schema:
+            config.response_mime_type = "application/json"
+            config.response_schema = response_schema
+
+        # Thinking mode: enable deep reasoning for specific agents
+        settings = get_settings()
+        thinking_agents = settings.thinking.get("agents", {})
+        thinking_level = thinking_agents.get(agent_name)
+        if thinking_level:
+            config.thinking_config = types.ThinkingConfig(
+                thinking_level=thinking_level,
+            )
+            logger.info(f"Agent '{agent_name}': thinking enabled (level={thinking_level})")
+
         logger.info(f"Executing agent '{agent_name}' with model '{model_name}'{' (stateless)' if is_stateless else ''}")
 
-        response = await client.aio.models.generate_content(
-            model=model_name,
-            contents=contents,
-            config=config,
-        )
+        try:
+            response = await self._generate_with_retry(
+                client, model_name, contents, config=config,
+            )
 
-        # Handle tool calls in the response
-        response_text = await self._handle_response(agent_name, response, client, model_name, contents, config)
+            # Handle tool calls in the response
+            response_text = await self._handle_response(
+                agent_name, response, client, model_name, contents, config,
+                user_id=user_id,
+            )
+        except Exception as e:
+            # All retries exhausted — save error marker so memory stays consistent
+            error_msg = f"⚠️ API error — message not processed: {type(e).__name__}"
+            logger.error(f"Agent '{agent_name}' failed after retries: {e}")
+            if not is_stateless:
+                await self._save_message(agent_name, "assistant", error_msg, source="system")
+            raise
 
         # Save assistant response to memory (skip for stateless agents)
         if not is_stateless:
@@ -570,6 +710,7 @@ class AgentRuntime:
         contents: list,
         config: Any,
         max_turns: int = 10,
+        user_id: str = "",
     ) -> str:
         """Process LLM response, executing tool calls in a loop if needed.
 
@@ -582,6 +723,13 @@ class AgentRuntime:
         """
         mission = self.get_mission(agent_name)
         tool_loop_enabled = mission.get("tool_loop", True)
+
+        # Runtime context variables for auto-injection into tool args
+        context_vars = {"user_id": user_id}
+
+        # Pre-load tool declarations for signature introspection
+        declarations = self.tool_runner.get_tool_declarations(agent_name)
+        decl_by_name = {d.name: d for d in declarations} if declarations else {}
 
         for turn in range(max_turns):
             if not response.candidates:
@@ -608,6 +756,15 @@ class AgentRuntime:
             for fc in function_calls:
                 tool_name = fc.name
                 args = dict(fc.args) if fc.args else {}
+
+                # Auto-inject context variables (e.g., user_id) into tool args
+                # when the tool function accepts them but the LLM didn't provide them
+                decl = decl_by_name.get(tool_name)
+                if decl and decl.function:
+                    sig = inspect.signature(decl.function)
+                    for param_name, value in context_vars.items():
+                        if param_name in sig.parameters and param_name not in args:
+                            args[param_name] = value
 
                 logger.info(f"Agent '{agent_name}' calling tool '{tool_name}' with args: {args}")
                 result = await self.tool_runner.execute(agent_name, tool_name, args)
@@ -649,15 +806,61 @@ class AgentRuntime:
                 types.Content(role="user", parts=tool_results)
             )
 
-            response = await client.aio.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=config,
+            response = await self._generate_with_retry(
+                client, model_name, contents, config=config,
             )
 
         # Safety: max turns hit
         logger.warning(f"Agent '{agent_name}' hit max tool loop turns ({max_turns})")
         return "I completed several steps but hit the iteration limit. Please check the results."
+
+    @staticmethod
+    async def _generate_with_retry(
+        client: Any,
+        model_name: str,
+        contents: Any,
+        *,
+        config: Any = None,
+    ) -> Any:
+        """Call generate_content with retry on transient 503/429 errors.
+
+        Retries up to len(_RETRY_DELAYS) times with the configured delays.
+        Non-retryable errors are raised immediately.
+        """
+        import asyncio
+        from google.genai.errors import ServerError, ClientError
+
+        last_error = None
+        for attempt in range(len(_RETRY_DELAYS) + 1):
+            try:
+                return await client.aio.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=config,
+                )
+            except (ServerError, ClientError) as e:
+                error_str = str(e)
+                is_retryable = any(code in error_str for code in ["503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED"])
+                if not is_retryable or attempt >= len(_RETRY_DELAYS):
+                    raise
+                delay = _RETRY_DELAYS[attempt]
+                logger.warning(
+                    f"API error (attempt {attempt + 1}/{len(_RETRY_DELAYS) + 1}): {e}. "
+                    f"Retrying in {delay}s..."
+                )
+
+                # Notify the user before waiting
+                notify = _retry_notify_callback.get(None)
+                if notify:
+                    try:
+                        await notify(attempt + 1, delay)
+                    except Exception:
+                        pass  # don't let notification failures break retry
+
+                last_error = e
+                await asyncio.sleep(delay)
+
+        raise last_error  # should never reach here
 
     def reload_missions(self) -> None:
         """Clear the mission cache so missions are re-loaded on next access."""

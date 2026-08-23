@@ -4,10 +4,28 @@
 active_client: telegram
 
 # Telegram user IDs allowed to interact with the bot
-allowed_user_ids:
-  - 8429093155
+# Add your IDs in user_config.yaml, NOT here!
+allowed_user_ids: []
 
 # File paths (relative to project root)
 data_dir: ./data
 agents_dir: ./agents
 system_dir: ./system
+
+# Google Search grounding — built into Gemini API, no extra API keys needed
+# All agents except those in exclude_agents get grounding with Google Search
+google_search_grounding:
+  exclude_agents:
+    - manager
+
+# URL Context — agents can read web page content from URLs in messages
+# Uses a separate Gemini call (URL Context tool is incompatible with function calling)
+url_context:
+  exclude_agents:
+    - manager
+
+# Thinking — enable deep reasoning for specific agents
+# Levels: minimal, low, medium, high (higher = deeper reasoning, more latency)
+# Only listed agents get thinking; unlisted agents use default (no thinking)
+thinking:
+  agents: {}
